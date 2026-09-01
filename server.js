@@ -1349,7 +1349,7 @@ app.post("/api/integrations/slack/sync", auth, async (req, res) => {
 app.get("/api/inbox", auth, async (req, res) => {
   const rows = await many(
     `SELECT DISTINCT ON (provider, thread_key)
-       provider, thread_key, contact_name, contact_identifier, body, occurred_at, client_id, analyzed_at
+       provider, thread_key, contact_name, contact_identifier, body, occurred_at, client_id, analyzed_at, direction
      FROM inbox_messages WHERE user_id=$1 ORDER BY provider, thread_key, occurred_at DESC`,
     [req.user.id]
   );
@@ -1358,9 +1358,27 @@ app.get("/api/inbox", auth, async (req, res) => {
     [req.user.id]
   );
   const countMap = Object.fromEntries(counts.map(c => [`${c.provider}:${c.thread_key}`, c.n]));
-  const threads = rows.map(r => ({ ...r, message_count: countMap[`${r.provider}:${r.thread_key}`] || 1 }))
-    .sort((a, b) => new Date(b.occurred_at) - new Date(a.occurred_at));
-  res.json({ threads });
+  // A thread is "unanswered" when the most recent message is inbound (from
+  // the customer) — meaning nobody on our side has replied yet. We surface
+  // how long it's been waiting so the busiest/oldest ones stand out.
+  const now = Date.now();
+  const threads = rows.map(r => {
+    const waitingMs = now - new Date(r.occurred_at).getTime();
+    return {
+      ...r,
+      message_count: countMap[`${r.provider}:${r.thread_key}`] || 1,
+      unanswered: r.direction === "inbound",
+      waiting_hours: r.direction === "inbound" ? Math.round(waitingMs / 3600000 * 10) / 10 : null,
+    };
+  }).sort((a, b) => {
+    // Unanswered threads first (oldest wait first within that group), then
+    // everything else by most recent activity.
+    if (a.unanswered !== b.unanswered) return a.unanswered ? -1 : 1;
+    if (a.unanswered) return b.waiting_hours - a.waiting_hours;
+    return new Date(b.occurred_at) - new Date(a.occurred_at);
+  });
+  const unansweredCount = threads.filter(t => t.unanswered).length;
+  res.json({ threads, unanswered_count: unansweredCount });
 });
 
 app.patch("/api/inbox/thread", auth, async (req, res) => {

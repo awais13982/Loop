@@ -1,3 +1,7 @@
+# PATCHED BUILD
+
+This build fixes the mobile signup button issue caused by Helmet blocking the inline frontend script, and accepts either DATABASE_URL or DATABASE_URI.
+
 # LOOP v1.6 — Production-ready foundation
 
 ## Patch note (applied after review)

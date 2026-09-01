@@ -34,12 +34,12 @@ const PLAN_LIMITS = {
   team:     { label: "Team",     analysesPerMonth: 2000, priceCents: 4900 },
 };
 
-if (!process.env.DATABASE_URL) {
-  console.error("[LOOP] DATABASE_URL is not set. Set it to a Postgres connection string, e.g.");
-  console.error("  DATABASE_URL=postgres://user:pass@host:5432/dbname");
+const databaseUrl = process.env.DATABASE_URL || process.env.DATABASE_URI;
+if (!databaseUrl) {
+  console.error("[LOOP] DATABASE_URL (or DATABASE_URI) is not set. Set it to a Postgres connection string.");
   process.exit(1);
 }
-const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+const pool = new pg.Pool({ connectionString: databaseUrl });
 
 // --- tiny query helpers (Postgres, async) ---
 const q = (text, params = []) => pool.query(text, params);
@@ -169,7 +169,7 @@ app.post("/api/webhooks/whatsapp", express.raw({ type: "application/json" }), as
   res.sendStatus(200);
 });
 
-app.use(helmet());
+app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: "250kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 

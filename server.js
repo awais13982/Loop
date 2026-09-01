@@ -1046,7 +1046,7 @@ async function runLoopAnalysis(userId, clientId, projectId, conversationText) {
 "status" reflects workflow stage only (open=not started, in_progress=actively being worked, waiting=blocked on someone/something else, resolved=done) — do not use it to express urgency, that's what "priority" is for.
 Do not invent names, amounts or dates.`;
   const response = await client.chat.completions.create({
-    model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+    model: process.env.OPENAI_MODEL || "llama-3.3-70b-versatile",
     messages: [{ role: "system", content: system }, { role: "user", content: conversationText }],
     response_format: { type: "json_object" },
   });

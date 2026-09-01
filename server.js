@@ -13,6 +13,18 @@ import { fileURLToPath } from "url";
 
 dotenv.config();
 
+// Password policy: 8+ chars, at least one uppercase, one lowercase, one
+// number, and one special character. Returns null if valid, or an error
+// message string if not — used by both signup and password reset.
+function passwordPolicyError(password) {
+  if (password.length < 8) return "Password must be at least 8 characters.";
+  if (!/[a-z]/.test(password)) return "Password must include at least one lowercase letter.";
+  if (!/[A-Z]/.test(password)) return "Password must include at least one uppercase letter.";
+  if (!/[0-9]/.test(password)) return "Password must include at least one number.";
+  if (!/[^A-Za-z0-9]/.test(password)) return "Password must include at least one special character (e.g. !@#$%).";
+  return null;
+}
+
 const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
@@ -491,9 +503,11 @@ async function ownedOrNull(table, id, userId) {
 app.post("/api/auth/signup", async (req, res) => {
   const email = String(req.body?.email || "").trim().toLowerCase();
   const password = String(req.body?.password || "");
-  if (!email || password.length < 8) {
-    return res.status(400).json({ error: "Use a valid email and a password of at least 8 characters." });
+  if (!email || !password) {
+    return res.status(400).json({ error: "Use a valid email and password." });
   }
+  const pwErr = passwordPolicyError(password);
+  if (pwErr) return res.status(400).json({ error: pwErr });
   try {
     const hash = await bcrypt.hash(password, 12);
     const verifyToken = crypto.randomBytes(32).toString("hex");
@@ -551,7 +565,7 @@ app.post("/api/auth/forgot-password", async (req, res) => {
 app.post("/api/auth/reset-password", async (req, res) => {
   const token = String(req.body?.token || "");
   const password = String(req.body?.password || "");
-  if (password.length < 8) return res.status(400).json({ error: "Password must be at least 8 characters." });
+  { const pwErr = passwordPolicyError(password); if (pwErr) return res.status(400).json({ error: pwErr }); }
   const u = await one("SELECT * FROM users WHERE password_reset_token=$1 AND password_reset_expires>now()", [token]);
   if (!u) return res.status(400).json({ error: "This reset link is invalid or has expired." });
   const hash = await bcrypt.hash(password, 12);

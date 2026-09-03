@@ -378,6 +378,8 @@ CREATE TABLE IF NOT EXISTS loops(
  payment_amount TEXT,
  next_action TEXT,
  is_bottleneck BOOLEAN DEFAULT false,
+ is_micro_promise BOOLEAN DEFAULT false,
+ commitment_phrase TEXT,
  last_status_change TIMESTAMPTZ DEFAULT now(),
  created_at TIMESTAMPTZ DEFAULT now()
 );
@@ -458,6 +460,8 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_renews_at TIMESTAMPTZ;
 ALTER TABLE loops ADD COLUMN IF NOT EXISTS person_id INTEGER REFERENCES people(id) ON DELETE SET NULL;
 ALTER TABLE loops ADD COLUMN IF NOT EXISTS dependency TEXT;
 ALTER TABLE loops ADD COLUMN IF NOT EXISTS is_bottleneck BOOLEAN DEFAULT false;
+ALTER TABLE loops ADD COLUMN IF NOT EXISTS is_micro_promise BOOLEAN DEFAULT false;
+ALTER TABLE loops ADD COLUMN IF NOT EXISTS commitment_phrase TEXT;
 ALTER TABLE loops ADD COLUMN IF NOT EXISTS last_status_change TIMESTAMPTZ DEFAULT now();
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS primary_bottleneck TEXT;
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS overall_priority INTEGER;
@@ -668,6 +672,20 @@ function scoreLoop(l) {
   return Math.round(score);
 }
 
+// payment_amount is free text written by the AI from conversation
+// language ("$4,500", "2000 USD", "around 1.2k") — this pulls the first
+// plausible number out of it for aggregation. Deliberately conservative:
+// if nothing number-like is found, returns 0 rather than guessing, so
+// Value at Risk never silently inflates itself off a bad parse.
+function parsePaymentAmount(text) {
+  if (!text) return 0;
+  const s = String(text).replace(/,/g, "");
+  const kMatch = s.match(/(\d+(?:\.\d+)?)\s*k\b/i);
+  if (kMatch) return Math.round(parseFloat(kMatch[1]) * 1000);
+  const match = s.match(/(\d+(?:\.\d+)?)/);
+  return match ? Math.round(parseFloat(match[1])) : 0;
+}
+
 function healthBucket(l) {
   if (l.status === "resolved") return "resolved";
   const stuckDays = (Date.now() - new Date(l.last_status_change).getTime()) / 86400000;
@@ -703,14 +721,47 @@ app.get("/api/dashboard", auth, async (req, res) => {
     `SELECT l.*, p.name AS person_name, c.name AS client_name FROM loops l
      LEFT JOIN people p ON p.id=l.person_id LEFT JOIN clients c ON c.id=l.client_id
      WHERE l.user_id=$1 AND l.status!='resolved'`, [req.user.id]);
-  const enriched = loops.map(l => ({ ...l, score: scoreLoop(l), health: healthBucket(l) }));
+  const enriched = loops.map(l => ({ ...l, score: scoreLoop(l), health: healthBucket(l), value: parsePaymentAmount(l.payment_amount) }));
   const bucket = (name) => enriched.filter(l => l.health === name).sort((a, b) => b.score - a.score);
   const buckets = { blocked: bucket("blocked"), at_risk: bucket("at_risk"), waiting: bucket("waiting"), moving: bucket("moving") };
+
+  // Value at risk: dollar exposure sitting in loops that are stalled or
+  // close to slipping (blocked + at_risk only — "waiting" on its own isn't
+  // yet a problem, that's normal workflow). Only counts loops with a
+  // parsed, nonzero amount so the total is never inflated by guesswork.
+  const riskLoops = [...buckets.blocked, ...buckets.at_risk].filter(l => l.value > 0);
+  const valueAtRisk = {
+    total: riskLoops.reduce((s, l) => s + l.value, 0),
+    count: riskLoops.length,
+    currency: "USD",
+    by_bucket: {
+      blocked: buckets.blocked.filter(l => l.value > 0).reduce((s, l) => s + l.value, 0),
+      at_risk: buckets.at_risk.filter(l => l.value > 0).reduce((s, l) => s + l.value, 0),
+    },
+    loops: riskLoops.map(l => ({ id: l.id, title: l.title, client_name: l.client_name, value: l.value, health: l.health })),
+  };
+
   res.json({
     buckets,
     counts: { blocked: buckets.blocked.length, at_risk: buckets.at_risk.length, waiting: buckets.waiting.length, moving: buckets.moving.length },
     top_action: enriched.sort((a, b) => b.score - a.score)[0] || null,
+    value_at_risk: valueAtRisk,
   });
+});
+
+// --- Micro-promises: soft/passive commitments the analyzer caught in
+// conversation language ("I'll send it by EOD") rather than explicit
+// tasks. Surfaced separately so the UI can call out "things you promised
+// without quite meaning to promise them" as its own list. ---
+app.get("/api/micro-promises", auth, async (req, res) => {
+  const loops = await many(
+    `SELECT l.*, p.name AS person_name, c.name AS client_name FROM loops l
+     LEFT JOIN people p ON p.id=l.person_id LEFT JOIN clients c ON c.id=l.client_id
+     WHERE l.user_id=$1 AND l.is_micro_promise=true AND l.status!='resolved'`, [req.user.id]);
+  const enriched = loops
+    .map(l => ({ ...l, score: scoreLoop(l), health: healthBucket(l), value: parsePaymentAmount(l.payment_amount) }))
+    .sort((a, b) => b.score - a.score);
+  res.json({ count: enriched.length, micro_promises: enriched });
 });
 
 // --- People ---
@@ -1042,9 +1093,11 @@ async function runLoopAnalysis(userId, clientId, projectId, conversationText) {
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: process.env.OPENAI_BASE_URL || undefined });
   const system = `You are LOOP. Analyze a client conversation and find what's stuck, not just what's due. Return ONLY JSON:
 {"summary":"...","primary_bottleneck":"...","overall_priority":0,"follow_up_message":"...",
-"loops":[{"title":"...","person":"the specific person who made or owns this commitment, or null if unclear","type":"task|waiting|approval|follow_up|payment|deadline|decision","status":"open|in_progress|waiting|resolved","dependency":"what specifically is blocking this, or null","deadline":"... or null","payment_amount":"... or null","priority":0,"next_action":"..."}]}.
+"loops":[{"title":"...","person":"the specific person who made or owns this commitment, or null if unclear","type":"task|waiting|approval|follow_up|payment|deadline|decision","status":"open|in_progress|waiting|resolved","dependency":"what specifically is blocking this, or null","deadline":"... or null","payment_amount":"... or null","priority":0,"next_action":"...","is_micro_promise":false,"commitment_phrase":"... or null"}]}.
 "status" reflects workflow stage only (open=not started, in_progress=actively being worked, waiting=blocked on someone/something else, resolved=done) — do not use it to express urgency, that's what "priority" is for.
-Do not invent names, amounts or dates.`;
+
+In addition to explicit tasks and deadlines, also catch soft/passive commitments — casual language that implies a promise without stating it as a task, e.g. "I'll send the asset by EOD", "let me check with the team", "I'll get back to you on that", "should be ready by Friday". For any loop created from language like this, set "is_micro_promise":true and put the exact phrase (verbatim, from the conversation) that triggered the detection into "commitment_phrase". For loops derived from an explicit, already-tracked task rather than passive language, set "is_micro_promise":false and "commitment_phrase":null.
+Do not invent names, amounts or dates. Do not mark something a micro-promise unless the conversation actually contains language resembling a soft commitment — when unsure, set is_micro_promise:false rather than guessing.`;
   const response = await client.chat.completions.create({
     model: process.env.OPENAI_MODEL || "llama-3.3-70b-versatile",
     messages: [{ role: "system", content: system }, { role: "user", content: conversationText }],
@@ -1070,12 +1123,12 @@ Do not invent names, amounts or dates.`;
       const l = loopsIn[i];
       const personId = await findOrCreatePerson(userId, clientId, l.person);
       const loopRow = await dbClient.query(
-        `INSERT INTO loops(user_id,client_id,project_id,conversation_id,person_id,title,type,status,priority,dependency,deadline,payment_amount,next_action,is_bottleneck)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
+        `INSERT INTO loops(user_id,client_id,project_id,conversation_id,person_id,title,type,status,priority,dependency,deadline,payment_amount,next_action,is_bottleneck,is_micro_promise,commitment_phrase)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
         [userId, clientId, projectId, conversationId, personId, l.title, l.type,
          ["open", "in_progress", "waiting", "resolved"].includes(l.status) ? l.status : "open",
          l.priority || 50, l.dependency || null, l.deadline || null, l.payment_amount || null, l.next_action || null,
-         i === bottleneckIdx]
+         i === bottleneckIdx, Boolean(l.is_micro_promise), l.commitment_phrase || null]
       );
       await autoScheduleReminder(userId, clientId, loopRow.rows[0].id, loopRow.rows[0]);
     }

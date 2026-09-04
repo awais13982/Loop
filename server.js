@@ -790,12 +790,38 @@ app.get("/api/dashboard", auth, async (req, res) => {
     loops: riskLoops.map(l => ({ id: l.id, title: l.title, client_name: l.client_name, value: l.value, health: l.health })),
   };
 
+  const pendingPayments = await many(
+    "SELECT amount FROM payments WHERE user_id=$1 AND status!='paid'", [req.user.id]
+  );
+
   res.json({
     buckets,
     counts: { blocked: buckets.blocked.length, at_risk: buckets.at_risk.length, waiting: buckets.waiting.length, moving: buckets.moving.length },
     top_action: enriched.sort((a, b) => b.score - a.score)[0] || null,
     value_at_risk: valueAtRisk,
+    stats: {
+      critical: buckets.blocked.length,
+      waiting: buckets.waiting.length + buckets.at_risk.length,
+      on_track: buckets.moving.length,
+      pending_amount: pendingPayments.reduce((s, p) => s + Number(p.amount || 0), 0),
+      pending_count: pendingPayments.length,
+    },
   });
+});
+
+app.get("/api/notifications", auth, async (req, res) => {
+  const rows = await many(
+    "SELECT * FROM notifications WHERE user_id=$1 ORDER BY id DESC LIMIT 20", [req.user.id]
+  );
+  const unread = rows.filter(n => !n.read).length;
+  res.json({ unread, notifications: rows });
+});
+app.post("/api/notifications/:id/read", auth, async (req, res) => {
+  const row = await one(
+    "UPDATE notifications SET read=true WHERE id=$1 AND user_id=$2 RETURNING *", [req.params.id, req.user.id]
+  );
+  if (!row) return res.status(404).json({ error: "Notification not found." });
+  res.json(row);
 });
 
 // --- Micro-promises: soft/passive commitments the analyzer caught in

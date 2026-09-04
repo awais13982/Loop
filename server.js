@@ -746,6 +746,84 @@ function healthBucket(l) {
   return "moving"; // open or in_progress, nothing overdue or stalled
 }
 
+// Plain-language breakdown of why a loop scored the way it did — same
+// inputs as scoreLoop(), just surfaced as sentences instead of collapsed
+// into a number, so the Command Center can say *why* something is urgent
+// instead of just asserting that it is.
+function riskReasons(l, stuckDays) {
+  const reasons = [];
+  if (l.deadline) {
+    const days = Math.ceil((new Date(l.deadline) - new Date()) / 86400000);
+    if (days < 0) reasons.push(`Deadline passed ${Math.abs(days)} day${Math.abs(days) === 1 ? "" : "s"} ago`);
+    else if (days === 0) reasons.push("Due today");
+    else if (days <= 2) reasons.push(`Due in ${days} day${days === 1 ? "" : "s"}`);
+    else if (days <= 7) reasons.push(`Due in ${days} days`);
+  }
+  if (l.status === "waiting" && stuckDays > 1) {
+    reasons.push(`Waiting ${Math.floor(stuckDays)} day${Math.floor(stuckDays) === 1 ? "" : "s"} for a reply`);
+  } else if (stuckDays > 3) {
+    reasons.push(`No movement in ${Math.floor(stuckDays)} days`);
+  }
+  if (l.payment_amount) reasons.push(`Payment tied to this: ${l.payment_amount}`);
+  if (l.dependency) reasons.push(`Blocked on: ${l.dependency}`);
+  return reasons;
+}
+
+// Rule-based (no extra AI call — keeps this endpoint fast and free-tier
+// friendly) recommended next step, one tier more specific than "do
+// something about this loop".
+function recommendedAction(l) {
+  if (l.next_action) return l.next_action;
+  if (l.status === "waiting" && l.dependency) return `Follow up on: ${l.dependency}`;
+  if (l.payment_amount) return "Send a payment reminder";
+  return "Send a status check-in";
+}
+
+// --- Command Center: "What should I do now?" ---
+// Wraps the same scoring/health logic as /api/dashboard and /api/next-actions
+// into a short ranked worklist with a plain-language reason and a
+// recommended (rule-based, not AI-generated) next step per item — the
+// "Fix My Day" screen the roadmap calls the AI Command Center.
+app.get("/api/command-center", auth, async (req, res) => {
+  const loops = await many(
+    `SELECT l.*, p.name AS person_name, c.name AS client_name FROM loops l
+     LEFT JOIN people p ON p.id=l.person_id LEFT JOIN clients c ON c.id=l.client_id
+     WHERE l.user_id=$1 AND l.status!='resolved'`, [req.user.id]);
+
+  const enriched = loops.map(l => {
+    const stuckDays = (Date.now() - new Date(l.last_status_change).getTime()) / 86400000;
+    return {
+      id: l.id,
+      title: l.title,
+      client_name: l.client_name,
+      person_name: l.person_name,
+      dependency: l.dependency,
+      deadline: l.deadline,
+      payment_amount: l.payment_amount,
+      draft_reply: l.draft_reply,
+      score: scoreLoop(l),
+      health: healthBucket(l),
+      reasons: riskReasons(l, stuckDays),
+      recommended_action: recommendedAction(l),
+    };
+  }).sort((a, b) => b.score - a.score);
+
+  const needsAttention = enriched.filter(l => l.health === "blocked" || l.health === "at_risk");
+  const valueAtRisk = needsAttention.reduce((s, l) => s + parsePaymentAmount(l.payment_amount), 0);
+
+  res.json({
+    open_loops: enriched.length,
+    needs_attention_count: needsAttention.length,
+    message: enriched.length === 0
+      ? "No open loops right now."
+      : needsAttention.length === 0
+        ? `You have ${enriched.length} open loop${enriched.length === 1 ? "" : "s"}, nothing urgent today.`
+        : `You have ${enriched.length} open loop${enriched.length === 1 ? "" : "s"}. ${needsAttention.length} need${needsAttention.length === 1 ? "s" : ""} attention today.`,
+    value_at_risk: valueAtRisk,
+    items: needsAttention.slice(0, 5),
+  });
+});
+
 app.get("/api/next-actions", auth, async (req, res) => {
   const loops = await many(
     `SELECT l.*, p.name AS person_name FROM loops l LEFT JOIN people p ON p.id=l.person_id

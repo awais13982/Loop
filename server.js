@@ -380,6 +380,8 @@ CREATE TABLE IF NOT EXISTS loops(
  is_bottleneck BOOLEAN DEFAULT false,
  is_micro_promise BOOLEAN DEFAULT false,
  commitment_phrase TEXT,
+ draft_reply TEXT,
+ draft_reply_updated_at TIMESTAMPTZ,
  last_status_change TIMESTAMPTZ DEFAULT now(),
  created_at TIMESTAMPTZ DEFAULT now()
 );
@@ -462,6 +464,8 @@ ALTER TABLE loops ADD COLUMN IF NOT EXISTS dependency TEXT;
 ALTER TABLE loops ADD COLUMN IF NOT EXISTS is_bottleneck BOOLEAN DEFAULT false;
 ALTER TABLE loops ADD COLUMN IF NOT EXISTS is_micro_promise BOOLEAN DEFAULT false;
 ALTER TABLE loops ADD COLUMN IF NOT EXISTS commitment_phrase TEXT;
+ALTER TABLE loops ADD COLUMN IF NOT EXISTS draft_reply TEXT;
+ALTER TABLE loops ADD COLUMN IF NOT EXISTS draft_reply_updated_at TIMESTAMPTZ;
 ALTER TABLE loops ADD COLUMN IF NOT EXISTS last_status_change TIMESTAMPTZ DEFAULT now();
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS primary_bottleneck TEXT;
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS overall_priority INTEGER;
@@ -649,6 +653,51 @@ app.patch("/api/loops/:id", auth, async (req, res) => {
     [status, req.params.id, req.user.id]
   );
   if (!row) return res.status(404).json({ error: "Loop not found." });
+  res.json(row);
+});
+
+// One-tap reply drafts: generates a short, channel-neutral draft the user
+// reviews and pastes themselves into Gmail/Slack/WhatsApp — deliberately
+// NOT auto-sent. This is a suggestion, not an action taken on the user's
+// behalf; a false positive here should cost a copy-paste, not an
+// embarrassing message that went out on its own.
+async function draftReplyForLoop(loop) {
+  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: process.env.OPENAI_BASE_URL || undefined });
+  const system = `You draft short, professional follow-up messages for a freelancer to send to a client, based on one specific stuck item. Write ONLY the message body — no subject line, no "Hi [name]," placeholder brackets (use "Hi there," if no name is given), no explanation, no markdown, no quotes around it. Keep it under 80 words, friendly but direct, and specific to the details given rather than generic. Do not invent facts not present in the details.`;
+  const details = [
+    `Item: ${loop.title}`,
+    loop.type ? `Type: ${loop.type}` : null,
+    loop.person_name ? `Person: ${loop.person_name}` : null,
+    loop.dependency ? `Currently blocked on: ${loop.dependency}` : null,
+    loop.deadline ? `Deadline: ${loop.deadline}` : null,
+    loop.next_action ? `What needs to happen next: ${loop.next_action}` : null,
+    loop.payment_amount ? `Related amount: ${loop.payment_amount}` : null,
+  ].filter(Boolean).join("\n");
+  const response = await client.chat.completions.create({
+    model: process.env.OPENAI_MODEL || "llama-3.3-70b-versatile",
+    messages: [{ role: "system", content: system }, { role: "user", content: details }],
+  });
+  return response.choices[0].message.content.trim();
+}
+
+app.post("/api/loops/:id/draft", auth, async (req, res) => {
+  const loop = await one(
+    `SELECT l.*, p.name AS person_name FROM loops l LEFT JOIN people p ON p.id=l.person_id
+     WHERE l.id=$1 AND l.user_id=$2`, [req.params.id, req.user.id]
+  );
+  if (!loop) return res.status(404).json({ error: "Loop not found." });
+  if (!process.env.OPENAI_API_KEY) return res.status(500).json({ error: "AI is not configured on this server yet." });
+  let draft;
+  try {
+    draft = await draftReplyForLoop(loop);
+  } catch (e) {
+    console.error("[LOOP] draft-reply failed:", e.message);
+    return res.status(502).json({ error: "Could not generate a draft right now. Try again in a moment." });
+  }
+  const row = await one(
+    "UPDATE loops SET draft_reply=$1, draft_reply_updated_at=now() WHERE id=$2 AND user_id=$3 RETURNING *",
+    [draft, req.params.id, req.user.id]
+  );
   res.json(row);
 });
 

@@ -639,6 +639,31 @@ app.patch("/api/payments/:id", auth, async (req, res) => {
 });
 
 // --- Loops ---
+// --- LOOP Calendar ---
+// Lays open loops out by deadline day instead of a flat list — the roadmap's
+// "put it into their day" view. Built from the same deadline field the
+// loop-card date picker writes to, so no separate scheduling system to keep
+// in sync.
+app.get("/api/calendar", auth, async (req, res) => {
+  const loops = await many(
+    `SELECT l.*, c.name AS client_name FROM loops l LEFT JOIN clients c ON c.id=l.client_id
+     WHERE l.user_id=$1 AND l.status!='resolved' AND l.deadline IS NOT NULL
+     ORDER BY l.deadline ASC`, [req.user.id]);
+
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const overdue = [], days = {};
+  for (const l of loops) {
+    const d = new Date(l.deadline); d.setHours(0, 0, 0, 0);
+    const item = { id: l.id, title: l.title, client_name: l.client_name, next_action: l.next_action, deadline: l.deadline };
+    if (d < today) overdue.push(item);
+    else {
+      const key = d.toISOString().slice(0, 10);
+      (days[key] ||= []).push(item);
+    }
+  }
+  res.json({ overdue, days: Object.entries(days).map(([date, items]) => ({ date, items })) });
+});
+
 app.get("/api/loops", auth, async (req, res) =>
   res.json((await many(
     `SELECT l.*, p.name AS person_name FROM loops l LEFT JOIN people p ON p.id=l.person_id

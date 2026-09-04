@@ -639,9 +639,15 @@ app.patch("/api/payments/:id", auth, async (req, res) => {
 
 // --- Loops ---
 app.get("/api/loops", auth, async (req, res) =>
-  res.json(await many(
+  res.json((await many(
     `SELECT l.*, p.name AS person_name FROM loops l LEFT JOIN people p ON p.id=l.person_id
      WHERE l.user_id=$1 ORDER BY l.priority DESC,l.id DESC`, [req.user.id]))
+    .map(l => {
+      const stuckDays = (Date.now() - new Date(l.last_status_change).getTime()) / 86400000;
+      return l.status === "resolved"
+        ? { ...l, score: null, health: "resolved", reasons: [] }
+        : { ...l, score: scoreLoop(l), health: healthBucket(l), reasons: riskReasons(l, stuckDays) };
+    }))
 );
 app.patch("/api/loops/:id", auth, async (req, res) => {
   const sets = [];

@@ -467,6 +467,7 @@ ALTER TABLE loops ADD COLUMN IF NOT EXISTS commitment_phrase TEXT;
 ALTER TABLE loops ADD COLUMN IF NOT EXISTS draft_reply TEXT;
 ALTER TABLE loops ADD COLUMN IF NOT EXISTS draft_reply_updated_at TIMESTAMPTZ;
 ALTER TABLE loops ADD COLUMN IF NOT EXISTS last_status_change TIMESTAMPTZ DEFAULT now();
+ALTER TABLE loops ADD COLUMN IF NOT EXISTS follow_up_stage INTEGER DEFAULT 0;
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS primary_bottleneck TEXT;
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS overall_priority INTEGER;
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS follow_up_message TEXT;
@@ -657,7 +658,7 @@ app.patch("/api/loops/:id", auth, async (req, res) => {
   if (req.body?.status !== undefined) {
     const status = String(req.body.status || "");
     if (!["open", "in_progress", "waiting", "resolved"].includes(status)) return res.status(400).json({ error: "Invalid status." });
-    sets.push(`status=$${i++}`, `last_status_change=now()`);
+    sets.push(`status=$${i++}`, `last_status_change=now()`, `follow_up_stage=0`);
     params.push(status);
   }
   // deadline/payment_amount/dependency are optional manual overrides for
@@ -1058,6 +1059,55 @@ async function runReminderSweep() {
 const SWEEP_INTERVAL_MS = 60_000;
 setInterval(() => { runReminderSweep().catch(e => console.error("[LOOP] reminder sweep failed:", e)); }, SWEEP_INTERVAL_MS);
 
+// --- Automatic Follow-Up Engine ---
+// Watches loops sitting in "waiting" status (nobody has replied) and nudges
+// the user at two thresholds, without them having to set a manual reminder:
+//   day 3+  -> stage 1: "hasn't responded, want to follow up?" + an
+//              auto-generated draft reply so acting on it is one tap
+//   day 7+  -> stage 2: "still no response" escalation notification
+// follow_up_stage is reset to 0 whenever a loop's status changes (see PATCH
+// /api/loops/:id), so re-opening or resolving a loop clears it and a loop
+// that goes back to "waiting" later starts the clock over.
+const FOLLOW_UP_STAGES = [
+  { stage: 1, days: 3, label: (t) => `No response yet on "${t}" — it's been 3+ days. Want to follow up?` },
+  { stage: 2, days: 7, label: (t) => `Still no response on "${t}" after 7+ days — this one may need escalating.` },
+];
+
+async function runAutoFollowUpSweep() {
+  const stuck = await many(
+    `SELECT * FROM loops WHERE status='waiting' AND follow_up_stage < 2
+     AND last_status_change <= now() - interval '3 days'`
+  );
+  let notified = 0;
+  for (const loop of stuck) {
+    const days = (Date.now() - new Date(loop.last_status_change).getTime()) / 86400000;
+    // Walk stages in order so a loop that's been silent 8 days but was
+    // never checked in on lands on stage 1 first, not straight to stage 2.
+    const next = FOLLOW_UP_STAGES.find(s => s.stage > (loop.follow_up_stage || 0) && days >= s.days);
+    if (!next) continue;
+
+    const message = next.label(loop.title);
+    await q("INSERT INTO notifications(user_id,message) VALUES($1,$2)", [loop.user_id, message]);
+    await q("UPDATE loops SET follow_up_stage=$1 WHERE id=$2", [next.stage, loop.id]);
+
+    // First-stage nudges also get a ready-to-send draft, if AI is
+    // configured and the loop doesn't already have one — the point is to
+    // make "follow up" a one-tap action, not just another notification.
+    if (next.stage === 1 && !loop.draft_reply && process.env.OPENAI_API_KEY) {
+      try {
+        const person = loop.person_id ? await one("SELECT name FROM people WHERE id=$1", [loop.person_id]) : null;
+        const draft = await draftReplyForLoop({ ...loop, person_name: person?.name });
+        await q("UPDATE loops SET draft_reply=$1, draft_reply_updated_at=now() WHERE id=$2", [draft, loop.id]);
+      } catch (e) {
+        console.error("[LOOP] auto-follow-up draft failed:", e.message);
+      }
+    }
+    notified++;
+  }
+  return notified;
+}
+setInterval(() => { runAutoFollowUpSweep().catch(e => console.error("[LOOP] auto-follow-up sweep failed:", e)); }, SWEEP_INTERVAL_MS);
+
 async function autoScheduleReminder(userId, clientId, loopId, loop) {
   let remindAt = null, message = null;
   if (loop.deadline) {
@@ -1109,6 +1159,7 @@ app.patch("/api/notifications/:id/read", auth, async (req, res) => {
   res.json({ ok: true });
 });
 app.post("/api/reminders/run-now", auth, async (req, res) => res.json({ sent: await runReminderSweep() }));
+app.post("/api/follow-ups/run-now", auth, async (req, res) => res.json({ notified: await runAutoFollowUpSweep() }));
 
 // --- Invoices ---
 app.get("/api/invoices", auth, async (req, res) =>

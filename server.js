@@ -644,13 +644,37 @@ app.get("/api/loops", auth, async (req, res) =>
      WHERE l.user_id=$1 ORDER BY l.priority DESC,l.id DESC`, [req.user.id]))
 );
 app.patch("/api/loops/:id", auth, async (req, res) => {
-  const status = String(req.body?.status || "");
-  if (!["open", "in_progress", "waiting", "resolved"].includes(status)) return res.status(400).json({ error: "Invalid status." });
-  // last_status_change resets whenever the status actually changes — that's
-  // the clock "how long has this been stuck" is measured from.
+  const sets = [];
+  const params = [];
+  let i = 1;
+
+  if (req.body?.status !== undefined) {
+    const status = String(req.body.status || "");
+    if (!["open", "in_progress", "waiting", "resolved"].includes(status)) return res.status(400).json({ error: "Invalid status." });
+    sets.push(`status=$${i++}`, `last_status_change=now()`);
+    params.push(status);
+  }
+  // deadline/payment_amount/dependency are optional manual overrides for
+  // loops that weren't extracted from a pasted conversation (or need a
+  // correction). deadline accepts "" to clear it.
+  if (req.body?.deadline !== undefined) {
+    sets.push(`deadline=$${i++}`);
+    params.push(req.body.deadline || null);
+  }
+  if (req.body?.payment_amount !== undefined) {
+    sets.push(`payment_amount=$${i++}`);
+    params.push(req.body.payment_amount || null);
+  }
+  if (req.body?.dependency !== undefined) {
+    sets.push(`dependency=$${i++}`);
+    params.push(req.body.dependency || null);
+  }
+  if (!sets.length) return res.status(400).json({ error: "Nothing to update." });
+
+  params.push(req.params.id, req.user.id);
   const row = await one(
-    "UPDATE loops SET status=$1, last_status_change=now() WHERE id=$2 AND user_id=$3 RETURNING *",
-    [status, req.params.id, req.user.id]
+    `UPDATE loops SET ${sets.join(", ")} WHERE id=$${i++} AND user_id=$${i++} RETURNING *`,
+    params
   );
   if (!row) return res.status(404).json({ error: "Loop not found." });
   res.json(row);

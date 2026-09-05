@@ -468,6 +468,7 @@ ALTER TABLE loops ADD COLUMN IF NOT EXISTS draft_reply TEXT;
 ALTER TABLE loops ADD COLUMN IF NOT EXISTS draft_reply_updated_at TIMESTAMPTZ;
 ALTER TABLE loops ADD COLUMN IF NOT EXISTS last_status_change TIMESTAMPTZ DEFAULT now();
 ALTER TABLE loops ADD COLUMN IF NOT EXISTS follow_up_stage INTEGER DEFAULT 0;
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS primary_bottleneck TEXT;
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS overall_priority INTEGER;
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS follow_up_message TEXT;
@@ -633,7 +634,7 @@ app.post("/api/payments", auth, async (req, res) => {
 app.patch("/api/payments/:id", auth, async (req, res) => {
   const status = String(req.body?.status || "");
   if (!["pending", "paid", "overdue"].includes(status)) return res.status(400).json({ error: "Invalid status." });
-  const row = await one("UPDATE payments SET status=$1 WHERE id=$2 AND user_id=$3 RETURNING *", [status, req.params.id, req.user.id]);
+  const row = await one("UPDATE payments SET status=$1, updated_at=now() WHERE id=$2 AND user_id=$3 RETURNING *", [status, req.params.id, req.user.id]);
   if (!row) return res.status(404).json({ error: "Payment not found." });
   res.json(row);
 });
@@ -644,6 +645,45 @@ app.patch("/api/payments/:id", auth, async (req, res) => {
 // "put it into their day" view. Built from the same deadline field the
 // loop-card date picker writes to, so no separate scheduling system to keep
 // in sync.
+// --- Weekly Work Health report ---
+// A once-a-week rollup rather than a live dashboard number — the point is
+// to surface a trend (response time, biggest bottleneck) that a snapshot
+// view can't show, using data that's already tracked elsewhere.
+app.get("/api/weekly-report", auth, async (req, res) => {
+  const uid = req.user.id;
+  const [analyses, created, closed, waitingLoops, overdue, recovered, bottleneck] = await Promise.all([
+    one("SELECT count(*)::int AS n FROM usage_events WHERE user_id=$1 AND event_type='analysis' AND created_at >= now() - interval '7 days'", [uid]),
+    one("SELECT count(*)::int AS n FROM loops WHERE user_id=$1 AND created_at >= now() - interval '7 days'", [uid]),
+    one("SELECT count(*)::int AS n FROM loops WHERE user_id=$1 AND status='resolved' AND last_status_change >= now() - interval '7 days'", [uid]),
+    many("SELECT last_status_change FROM loops WHERE user_id=$1 AND status='waiting'", [uid]),
+    one("SELECT count(*)::int AS n FROM loops WHERE user_id=$1 AND status!='resolved' AND deadline IS NOT NULL AND deadline::date < CURRENT_DATE", [uid]),
+    one("SELECT COALESCE(sum(amount),0)::float AS n FROM payments WHERE user_id=$1 AND status='paid' AND updated_at >= now() - interval '7 days'", [uid]),
+    one(`SELECT c.name, count(*)::int AS n FROM loops l JOIN clients c ON c.id=l.client_id
+         WHERE l.user_id=$1 AND l.status!='resolved' GROUP BY c.name ORDER BY n DESC LIMIT 1`, [uid]),
+  ]);
+
+  const avgWaitDays = waitingLoops.length
+    ? waitingLoops.reduce((s, l) => s + (Date.now() - new Date(l.last_status_change).getTime()) / 86400000, 0) / waitingLoops.length
+    : 0;
+
+  let recommendation = "Nothing urgent stands out this week — keep the pace.";
+  if (bottleneck && bottleneck.n >= 3) recommendation = `${bottleneck.name} has the most open loops right now — worth a check-in.`;
+  else if (avgWaitDays > 3) recommendation = `Clients are taking ${avgWaitDays.toFixed(1)} days to respond on average — consider a 48-hour follow-up rule.`;
+  else if (overdue.n > 0) recommendation = `${overdue.n} loop${overdue.n === 1 ? " is" : "s are"} past its deadline — worth clearing those first.`;
+
+  res.json({
+    analyses_this_week: analyses.n,
+    loops_created: created.n,
+    loops_closed: closed.n,
+    still_waiting: waitingLoops.length,
+    overdue: overdue.n,
+    payments_recovered: recovered.n,
+    avg_wait_days: Math.round(avgWaitDays * 10) / 10,
+    biggest_bottleneck: bottleneck ? bottleneck.name : null,
+    recommendation,
+  });
+});
+
 app.get("/api/calendar", auth, async (req, res) => {
   const loops = await many(
     `SELECT l.*, c.name AS client_name FROM loops l LEFT JOIN clients c ON c.id=l.client_id

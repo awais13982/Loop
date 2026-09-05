@@ -1,0 +1,951 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LOOP</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#faf6f0; --surface:#fffdfa; --border:#ece1d3; --border-strong:#ddccb5;
+  --text:#2b2420; --text-2:#7c6f60; --text-3:#a89985;
+  --primary:#bb5f43; --primary-hover:#a14e35; --primary-tint:#fbe9e0;
+  --danger:#c1493c; --danger-tint:#fbe7e2; --danger-text:#8a2f24;
+  --warn:#c98a2e; --warn-tint:#faf0dc; --warn-text:#8a5e17;
+  --amber:#b6901f; --amber-tint:#f9f1da; --amber-text:#7d5e10;
+  --success:#5c7d54; --success-tint:#eaf1e6; --success-text:#3d5636;
+  --radius:14px; --radius-sm:10px;
+  --shadow-sm:0 1px 2px rgba(20,20,40,.04),0 1px 3px rgba(20,20,40,.06);
+  --shadow-md:0 4px 10px rgba(20,20,40,.06),0 2px 4px rgba(20,20,40,.04);
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;background:var(--bg);color:var(--text)}
+.wrap{max-width:1080px;margin:auto;padding:24px}
+h1{font-family:"Fraunces",Georgia,serif;font-size:26px;font-weight:600;letter-spacing:-.01em;display:flex;align-items:center;gap:9px;color:var(--text)}
+h1 .logo-dot{width:10px;height:10px;border-radius:50%;background:var(--primary);display:inline-block}
+.nav{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.nav2{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:20px}
+.nav button,.btn{border:1px solid transparent;border-radius:var(--radius-sm);padding:9px 14px;background:var(--primary);color:white;cursor:pointer;font:inherit;font-size:13.5px;font-weight:600;display:inline-flex;align-items:center;gap:6px;transition:background .12s,transform .08s,box-shadow .12s}
+.nav button:hover,.btn:hover{background:var(--primary-hover)}
+.nav button:active,.btn:active{transform:scale(.98)}
+.nav button.light,.btn.light{background:var(--surface);color:var(--text);border:1px solid var(--border-strong)}
+.nav button.light:hover,.btn.light:hover{background:#fafafe;border-color:var(--text-3)}
+.nav2 button{background:var(--surface);color:var(--text-2);font-size:12.5px;padding:7px 12px;border:1px solid var(--border);font-weight:500}
+.nav2 button:hover{background:var(--primary-tint);color:var(--primary);border-color:var(--primary)}
+.btn.small{padding:6px 11px;font-size:12px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:20px;margin:14px 0;box-shadow:var(--shadow-sm)}
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+@media(min-width:600px){.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}}
+.grid4{display:grid;grid-template-columns:1fr;gap:12px}
+.stat{font-size:26px;font-weight:700;letter-spacing:-.01em}
+.muted{color:var(--text-2);font-size:13px}
+input,textarea,select{width:100%;padding:10px 12px;border:1px solid var(--border-strong);border-radius:var(--radius-sm);font:inherit;margin:6px 0 10px;background:var(--surface);transition:border-color .12s,box-shadow .12s}
+input:focus,textarea:focus,select:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-tint)}
+textarea{min-height:150px}
+.hidden{display:none}
+.item{padding:12px 0;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.item .meta{flex:1;min-width:200px}
+.pill{display:inline-block;background:var(--bg);color:var(--text-2);padding:4px 9px;border-radius:20px;font-size:11px;font-weight:600;margin-left:6px}
+.pill.p-high{background:var(--danger-tint);color:var(--danger-text)}
+.pill.p-mid{background:var(--warn-tint);color:var(--warn-text)}
+.pill.p-low{background:var(--success-tint);color:var(--success-text)}
+.bucket{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px;border-left:3px solid var(--border-strong)}
+.bucket.blocked{border-left-color:var(--danger)}
+.bucket.at_risk{border-left-color:var(--warn)}
+.bucket.waiting{border-left-color:var(--amber)}
+.bucket.moving{border-left-color:var(--success)}
+.bucket h3{margin:0 0 10px;font-size:13px;font-weight:700;display:flex;align-items:center;gap:7px;color:var(--text-2);text-transform:uppercase;letter-spacing:.03em}
+.bucket h3 .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.bucket.blocked h3 .dot{background:var(--danger)}
+.bucket.at_risk h3 .dot{background:var(--warn)}
+.bucket.waiting h3 .dot{background:var(--amber)}
+.bucket.moving h3 .dot{background:var(--success)}
+.bucket .loopcard{background:var(--bg);border-radius:var(--radius-sm);padding:11px 12px;margin-bottom:8px;font-size:13px;border:1px solid var(--border)}
+.error{color:var(--danger-text)}
+.row{display:flex;gap:8px}
+.row>*{flex:1}
+h2{margin-top:0;font-family:"Fraunces",Georgia,serif;font-size:19px;font-weight:600;letter-spacing:-.005em}
+.bottleneck-banner{background:linear-gradient(135deg,#3d2a20,#2b1d16);color:#faf3ea;border-radius:var(--radius);padding:18px 20px;margin:14px 0;box-shadow:var(--shadow-md)}
+.results-table{width:100%;border-collapse:collapse;font-size:13px}
+.results-table th,.results-table td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--border);vertical-align:top}
+.integration{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 0;border-top:1px solid var(--border)}.integration:first-child{border-top:0}.integration-icon{width:40px;height:40px;border-radius:11px;background:var(--primary-tint);color:var(--primary);display:grid;place-items:center;font-weight:800;flex-shrink:0}.integration-icon svg{width:20px;height:20px}.integration .left{display:flex;align-items:center;gap:12px}.integration .muted{margin-top:2px}.importbox{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;margin-top:12px}.thread{padding:11px 0;border-top:1px solid var(--border)}.thread:first-child{border-top:0}
+.metric-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+@media(min-width:600px){.metric-grid{grid-template-columns:repeat(3,1fr)}}
+.metric{background:var(--bg);border-radius:var(--radius-sm);padding:14px}
+.metric .metric-label{font-size:12px;color:var(--text-2);font-weight:600;display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.metric .metric-value{font-size:22px;font-weight:700;letter-spacing:-.01em}
+.var-card{background:linear-gradient(135deg,var(--danger-tint),var(--warn-tint));border:1px solid var(--warn);border-radius:var(--radius);padding:18px 20px;margin:14px 0}
+.var-card .var-total{font-size:30px;font-weight:800;color:var(--danger-text);letter-spacing:-.02em}
+.var-card .var-sub{font-size:13px;color:var(--text-2);margin-top:2px}
+.var-breakdown{display:flex;gap:16px;margin-top:12px;flex-wrap:wrap}
+.var-breakdown div{font-size:12.5px;color:var(--text-2)}
+.var-breakdown b{color:var(--text);font-weight:700}
+.promise-item{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--primary);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:8px}
+.promise-item .promise-phrase{font-style:italic;color:var(--primary);font-size:12.5px;margin-top:4px}
+.icon{width:15px;height:15px;flex-shrink:0;vertical-align:-2px}
+.app-shell{display:flex;min-height:100vh}
+.sidebar{width:224px;flex-shrink:0;background:var(--surface);border-right:1px solid var(--border);padding:20px 14px;display:flex;flex-direction:column;position:sticky;top:0;height:100vh;overflow-y:auto}
+.sidebar-logo{font-family:"Fraunces",Georgia,serif;font-size:21px;font-weight:600;display:flex;align-items:center;gap:8px;padding:0 10px;margin-bottom:22px}
+.sidebar-nav{display:flex;flex-direction:column;gap:2px}
+.sidebar-nav button{display:flex;align-items:center;gap:11px;text-align:left;background:none;border:none;color:var(--text-2);font:inherit;font-size:13.5px;font-weight:600;padding:9px 11px;border-radius:var(--radius-sm);cursor:pointer;width:100%}
+.sidebar-nav button:hover{background:var(--bg)}
+.sidebar-nav button.active{background:var(--primary-tint);color:var(--primary-hover)}
+.sidebar-nav button .icon{width:17px;height:17px}
+.sidebar-divider{height:1px;background:var(--border);margin:10px 4px}
+.sidebar-logout{margin-top:auto;align-self:flex-start}
+.main-wrap{flex:1;min-width:0}
+.topbar{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:18px;flex-wrap:wrap}
+.topbar h1{font-size:22px;margin:0}
+.topbar .greeting-sub{color:var(--text-2);font-size:13.5px;margin-top:2px}
+.topbar-actions{display:flex;align-items:center;gap:10px}
+.bell-btn{position:relative;background:var(--surface);border:1px solid var(--border-strong);width:38px;height:38px;border-radius:50%;display:grid;place-items:center;cursor:pointer}
+.bell-dot{position:absolute;top:6px;right:7px;width:8px;height:8px;border-radius:50%;background:var(--danger)}
+.avatar-circle{width:38px;height:38px;border-radius:50%;background:var(--primary);color:#fff;display:grid;place-items:center;font-weight:700;font-size:14px;flex-shrink:0}
+.stat-cards{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:16px}
+@media(min-width:700px){.stat-cards{grid-template-columns:repeat(4,1fr)}}
+.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px 16px;display:flex;gap:12px;align-items:flex-start}
+.stat-card .stat-icon{width:38px;height:38px;border-radius:11px;display:grid;place-items:center;flex-shrink:0}
+.stat-card .stat-num{font-size:21px;font-weight:700;letter-spacing:-.01em}
+.stat-card .stat-label{font-size:12px;color:var(--text-2);font-weight:600}
+.attention-card{background:linear-gradient(135deg,var(--danger-tint),var(--surface));border:1px solid var(--danger);border-radius:16px;padding:18px 20px;margin-bottom:18px}
+.attention-card .attn-head{display:flex;align-items:center;gap:7px;color:var(--danger-text);font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:.03em;margin-bottom:12px}
+.attn-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.loop-table{width:100%;border-collapse:collapse;font-size:13px}
+.loop-table th{text-align:left;padding:8px 10px;color:var(--text-2);font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.02em;border-bottom:1px solid var(--border)}
+.loop-table td{padding:11px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+.loop-table tr:last-child td{border-bottom:0}
+@media(max-width:860px){.sidebar{display:none}.loop-table{display:block;overflow-x:auto;white-space:nowrap}}
+.bottom-tabs{display:none}
+@media(max-width:860px){
+.bottom-tabs{display:flex;position:fixed;bottom:0;left:0;right:0;background:var(--surface);border-top:1px solid var(--border);padding:6px 4px calc(6px + env(safe-area-inset-bottom));justify-content:space-around;z-index:20}
+.bottom-tabs button{background:none;border:none;color:var(--text-3);display:flex;flex-direction:column;align-items:center;gap:2px;font-size:10px;font-weight:600;padding:4px 8px;border-radius:10px}
+.bottom-tabs button.active{color:var(--primary)}
+.bottom-tabs .icon{width:20px;height:20px}
+.main-wrap{padding-bottom:64px}
+}
+.more-sheet{position:fixed;left:12px;right:12px;bottom:70px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:8px;z-index:21;box-shadow:var(--shadow-md);max-height:60vh;overflow-y:auto}
+.more-sheet button{display:block;width:100%;text-align:left;background:none;border:none;font:inherit;font-size:14px;font-weight:600;color:var(--text);padding:11px 12px;border-radius:var(--radius-sm)}
+.more-sheet button:hover{background:var(--bg)}
+</style></head><body>
+<section id="auth" class="card" style="max-width:420px;margin:60px auto">
+<h2>Find what's stuck. Know what to do next.</h2>
+<input id="email" placeholder="Email">
+<input id="password" type="password" placeholder="Password (8+ characters)">
+<button class="btn" onclick="signup()">Create account</button>
+<button class="btn light" onclick="login()">Log in</button>
+<p><a href="#" onclick="event.preventDefault(); toggleForgotPassword()" style="font-size:14px;color:var(--text-2)">Forgot password?</a></p>
+<p id="authmsg" class="error"></p>
+
+<div id="forgotBox" class="hidden" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
+  <p class="muted" style="margin-bottom:8px">Enter your email and we'll send you a reset link.</p>
+  <input id="forgotEmail" placeholder="Email">
+  <button class="btn" onclick="requestPasswordReset()">Send reset link</button>
+  <p id="forgotMsg" class="error"></p>
+</div>
+
+<div id="resetBox" class="hidden" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
+  <p class="muted" style="margin-bottom:8px">Choose a new password.</p>
+  <input id="newPassword" type="password" placeholder="New password (8+ characters)">
+  <button class="btn" onclick="submitNewPassword()">Reset password</button>
+  <p id="resetMsg" class="error"></p>
+</div>
+</section>
+
+<div id="appshell" class="app-shell hidden">
+<aside class="sidebar">
+<div class="sidebar-logo"><span class="logo-dot"></span>LOOP</div>
+<nav class="sidebar-nav" id="sidebarNav">
+<button data-view="dashboard" onclick="view('dashboard')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Home</button>
+<button data-view="inbox" onclick="view('inbox')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18v12H3z"/><path d="M3 7l9 6 9-6"/></svg>Inbox</button>
+<button data-view="loops" onclick="view('loops')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>Loops</button>
+<button data-view="analyze" onclick="view('analyze')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/></svg>Analyze</button>
+<button data-view="followups" onclick="view('followups')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.5 8.5 0 1 1-3.8-7.1L21 3l-1 4.5"/></svg>Follow-up</button>
+<div class="sidebar-divider"></div>
+<button data-view="clients" onclick="view('clients')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 8a3.5 3.5 0 0 1 3.4 4.3M21.5 20a6 6 0 0 0-5-5.9"/></svg>Clients</button>
+<button data-view="projects" onclick="view('projects')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>Projects</button>
+<button data-view="actioncenter" onclick="view('actioncenter')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="0.5" fill="currentColor"/></svg>Action Center</button>
+<button data-view="payments" onclick="view('payments')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>Payments</button>
+<button data-view="invoices" onclick="view('invoices')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3h9l5 5v13H6Z"/><path d="M9 12h6M9 16h6M9 8h3"/></svg>Invoices</button>
+<button data-view="reminders" onclick="view('reminders')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>Reminders</button>
+<div class="sidebar-divider"></div>
+<button data-view="integrations" onclick="view('integrations')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>Integrations</button>
+<button data-view="billing" onclick="view('billing')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>Billing</button>
+</nav>
+<button id="logout" class="btn light small sidebar-logout hidden" onclick="logout()">Log out</button>
+</aside>
+
+<main class="main-wrap"><div class="wrap">
+
+<!-- Screen 1: Dashboard -->
+<section id="dashboard" class="hidden">
+<div class="topbar">
+<div><h1 id="greetingText">Good morning</h1><div class="greeting-sub">Here's what's happening with your work.</div></div>
+<div class="topbar-actions">
+<button class="btn small" onclick="view('analyze')">+ New analysis</button>
+<button class="bell-btn" onclick="toggleNotifPanel()" title="Notifications"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg><span id="bellDot" class="bell-dot hidden"></span></button>
+<div class="avatar-circle" id="avatarCircle">?</div>
+</div>
+</div>
+
+<div class="stat-cards">
+<div class="stat-card"><div class="stat-icon" style="background:var(--danger-tint);color:var(--danger-text)"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg></div><div><div class="stat-num" id="statCritical">0</div><div class="stat-label">Critical</div></div></div>
+<div class="stat-card"><div class="stat-icon" style="background:var(--warn-tint);color:var(--warn-text)"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></div><div><div class="stat-num" id="statWaiting">0</div><div class="stat-label">Waiting</div></div></div>
+<div class="stat-card"><div class="stat-icon" style="background:var(--success-tint);color:var(--success-text)"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12l5 5L20 6"/></svg></div><div><div class="stat-num" id="statOnTrack">0</div><div class="stat-label">On track</div></div></div>
+<div class="stat-card"><div class="stat-icon" style="background:var(--primary-tint);color:var(--primary)"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div><div><div class="stat-num" id="statPending">$0</div><div class="stat-label">Pending payments</div></div></div>
+</div>
+
+<div id="cmdCenter" class="card hidden" style="border-color:var(--primary)">
+<div class="attn-head" style="justify-content:space-between;display:flex;align-items:center">
+  <span><svg class="icon" viewBox="0 0 24 24" fill="currentColor" stroke="none" style="width:14px;height:14px"><path d="M12 2c1 3-1 4-1 6a3 3 0 1 0 6 0c2 2 3 5 3 7a8 8 0 1 1-16 0c0-4 3-6 4-9 1 2 1 3 2 3 1 0 1-3-1-7 1 0 2 0 3 0Z"/></svg>Fix My Day</span>
+</div>
+<div id="cmdMessage" class="muted" style="margin:2px 0 10px"></div>
+<div id="cmdItems"></div>
+</div>
+
+<div id="varcard" class="hidden"></div>
+
+<div id="promisecard" class="card hidden">
+<h2><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:17px;height:17px"><path d="M8 12l3 3 5-6"/><circle cx="12" cy="12" r="9"/></svg> Promises caught in conversation</h2>
+<p class="muted" style="margin-top:-6px">Soft commitments LOOP noticed in the language itself — not explicit tasks.</p>
+<div id="promiselist"></div>
+</div>
+
+<div class="card">
+<h2 style="margin-bottom:10px">Open loops</h2>
+<table class="loop-table">
+<thead><tr><th>Loop</th><th>Client</th><th>Status</th><th>Priority</th><th>Next action</th></tr></thead>
+<tbody id="loopTableBody"></tbody>
+</table>
+</div>
+
+<div class="grid4">
+<div class="bucket blocked"><h3><span class="dot"></span>Blocked</h3><div id="bucket-blocked"></div></div>
+<div class="bucket at_risk"><h3><span class="dot"></span>At risk</h3><div id="bucket-at_risk"></div></div>
+<div class="bucket waiting"><h3><span class="dot"></span>Waiting</h3><div id="bucket-waiting"></div></div>
+<div class="bucket moving"><h3><span class="dot"></span>Moving</h3><div id="bucket-moving"></div></div>
+</div>
+</section>
+
+<!-- Screen 2: Analyze -->
+<section id="analyze" class="hidden"><div class="card">
+<h2>Analyze a conversation</h2>
+<div class="row">
+<select id="aclient"><option value="">No client</option></select>
+<select id="aproject"><option value="">No project</option></select>
+</div>
+<textarea id="conv" placeholder="Paste a WhatsApp, email, or Slack conversation..."></textarea>
+<div id="usagenote" class="muted"></div>
+<button class="btn" onclick="analyze()">Analyze</button>
+<div id="analyzeerr" class="error"></div>
+</div></section>
+
+<!-- Screen 3: Results -->
+<section id="results" class="hidden"><div class="card">
+<h2>Results</h2>
+<div id="resultsbody"></div>
+</div></section>
+
+<!-- Screen 4: Follow-up -->
+<section id="followups" class="hidden">
+<div class="card"><h2>Conversations</h2><div id="convlist"></div></div>
+<div id="followupcard" class="card hidden">
+<h2>Follow-up message</h2>
+<div id="followupmeta" class="muted"></div>
+<textarea id="followuptext"></textarea>
+<button class="btn" onclick="copyFollowup()">Copy</button>
+<button class="btn light" onclick="saveFollowup()">Save edit</button>
+<button class="btn light" onclick="markFollowupSent()">Mark sent</button>
+<span id="followupsaved" class="muted"></span>
+</div>
+</section>
+
+<!-- Screen 5: Loops -->
+<section id="loops" class="hidden"><div class="card">
+<h2>All Loops</h2>
+<div id="looplist"></div>
+</div></section>
+
+<section id="actioncenter" class="hidden"><div class="card">
+<h2>Action Center</h2>
+<select id="acclient" onchange="loadActionCenter()"><option value="">Choose a client…</option></select>
+<div id="acbody"></div>
+</div></section>
+
+<section id="clients" class="hidden"><div class="card">
+<h2>Clients</h2>
+<input id="cname" placeholder="Client name">
+<input id="cnotes" placeholder="Notes (optional)">
+<button class="btn" onclick="addClient()">Add client</button>
+<div id="clientlist"></div>
+</div></section>
+
+<section id="projects" class="hidden"><div class="card">
+<h2>Projects</h2>
+<div class="row">
+<select id="prjclient"><option value="">No client</option></select>
+<input id="prjname" placeholder="Project name">
+</div>
+<button class="btn" onclick="addProject()">Add project</button>
+<div id="projectlist"></div>
+</div></section>
+
+<section id="invoices" class="hidden"><div class="card">
+<h2>Invoices</h2>
+<div class="row">
+<select id="invclient"><option value="">No client</option></select>
+<select id="invproject"><option value="">No project</option></select>
+</div>
+<div class="row">
+<input id="invamount" type="number" placeholder="Amount">
+<input id="invcurrency" placeholder="Currency" value="USD">
+</div>
+<input id="invdue" type="date">
+<button class="btn" onclick="addInvoice()">Create invoice</button>
+<div id="invoicelist"></div>
+</div></section>
+
+<section id="payments" class="hidden"><div class="card">
+<h2>Payments</h2>
+<div class="row">
+<select id="pclient"><option value="">No client</option></select>
+<select id="pproject"><option value="">No project</option></select>
+</div>
+<div class="row">
+<input id="pamount" type="number" placeholder="Amount">
+<select id="pstatus"><option>pending</option><option>paid</option><option>overdue</option></select>
+</div>
+<button class="btn" onclick="addPayment()">Add payment</button>
+<div id="paylist"></div>
+</div></section>
+
+<section id="billing" class="hidden"><div class="card">
+<h2>Billing</h2>
+<div id="billingbody"></div>
+</div></section>
+
+<section id="integrations" class="hidden">
+<div class="card"><h2>Connected workflows</h2><p class="muted">Connect the places where client conversations already happen. LOOP keeps credentials on the server and never exposes provider secrets to the browser.</p>
+<div class="integration"><div class="left"><div class="integration-icon" style="background:#EA4335"><svg viewBox="0 0 24 24" fill="none"><path d="M3 6.5V17a1 1 0 0 0 1 1h1.5V8.4l6.5 4.9 6.5-4.9V18H20a1 1 0 0 0 1-1V6.5a1.5 1.5 0 0 0-2.4-1.2L12 10 5.4 5.3A1.5 1.5 0 0 0 3 6.5Z" fill="#fff"/></svg></div><div><b>Gmail</b><div class="muted" id="gmailStatus">Checking connection…</div></div></div><button id="gmailBtn" class="btn light small" onclick="connectIntegration('gmail')">Connect Gmail</button></div>
+<div class="integration"><div class="left"><div class="integration-icon" style="background:#25D366"><svg viewBox="0 0 24 24" fill="none"><path d="M8.7 8.3c.3-.6.5-.6.8-.6h.5c.2 0 .4 0 .6.4.2.5.6 1.5.7 1.6.1.1.1.3 0 .5-.1.2-.2.3-.3.5-.2.2-.3.3-.1.6.2.3.8 1.3 1.7 2.1 1.2 1 2.1 1.4 2.4 1.5.3.1.5.1.6-.1.2-.2.7-.8.9-1 .2-.2.4-.2.6-.1.2.1 1.5.7 1.8.8.3.1.4.2.5.3.1.2.1.9-.2 1.5-.3.6-1.5 1.2-2.1 1.3-.6.1-1.1.1-3.5-1-2.9-1.2-4.6-4.2-4.8-4.4-.1-.2-1.1-1.5-1.1-2.9 0-1.4.7-2 1-2.3Z" fill="#fff"/><path d="M12 3a9 9 0 0 0-7.8 13.5L3 21l4.6-1.2A9 9 0 1 0 12 3Z" fill="none" stroke="#fff" stroke-width="1.4"/></svg></div><div><b>WhatsApp Business</b><div class="muted" id="whatsappStatus">Checking connection…</div></div></div><button id="whatsappBtn" class="btn light small" onclick="connectIntegration('whatsapp')">Connect WhatsApp</button></div>
+<div class="integration"><div class="left"><div class="integration-icon" style="background:#4A154B"><svg viewBox="0 0 24 24" fill="none"><rect x="4" y="4" width="6" height="6" rx="1.5" fill="#36C5F0"/><rect x="14" y="4" width="6" height="6" rx="1.5" fill="#2EB67D"/><rect x="4" y="14" width="6" height="6" rx="1.5" fill="#ECB22E"/><rect x="14" y="14" width="6" height="6" rx="1.5" fill="#E01E5A"/></svg></div><div><b>Slack</b><div class="muted" id="slackStatus">Checking connection…</div></div></div><button id="slackBtn" class="btn light small" onclick="connectIntegration('slack')">Connect Slack</button></div>
+<div class="integration"><div class="left"><div class="integration-icon" style="background:var(--primary-tint);color:var(--primary)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 9h18M8 3v4M16 3v4"/></svg></div><div><b>Calendar</b><div class="muted">Deadline and scheduling sync is planned for a future release.</div></div></div><span class="pill">Coming soon</span></div>
+<div class="integration"><div class="left"><div class="integration-icon" style="background:#1877F2"><svg viewBox="0 0 24 24" fill="none"><path d="M15 8.5h1.5V5.7c-.3 0-1.2-.1-2.3-.1-2.3 0-3.9 1.4-3.9 4v2.4H8v3.2h2.3V21h3.3v-5.8h2.3l.4-3.2h-2.7V10c0-.9.3-1.5 1.4-1.5Z" fill="#fff"/></svg></div><div><b>Facebook</b><div class="muted">Facebook Messenger sync is planned for a future release.</div></div></div><span class="pill">Coming soon</span></div>
+</div>
+<div class="importbox"><h3 style="margin-top:0">WhatsApp: link your business phone number</h3>
+<p class="muted">After connecting, paste the Phone Number ID from your Meta Business dashboard so incoming messages route to your LOOP account.</p>
+<div class="row"><input id="waPhoneId" placeholder="Phone Number ID"><button class="btn light small" onclick="saveWhatsappPhoneId()">Save</button></div></div>
+<div class="card"><h2>Gmail inbox</h2><p class="muted">Pull recent threads, preview them, and send a selected conversation to LOOP's analyzer.</p><div class="row"><input id="gmailQuery" placeholder="Search Gmail, e.g. newer_than:7d" value="in:anywhere newer_than:30d"><button class="btn" onclick="loadGmailThreads()">Load threads</button></div><div id="gmailThreads"></div></div>
+</section>
+
+<section id="inbox" class="hidden"><div class="card">
+<h2>Inbox</h2>
+<p class="muted">Every message pulled in from Gmail, WhatsApp, and Slack lands here, grouped by conversation. Assign a client, then analyze — same pipeline as pasting a conversation by hand.</p>
+<div class="row">
+<button class="btn light small" onclick="syncProvider('gmail')">Sync Gmail</button>
+<button class="btn light small" onclick="syncProvider('slack')">Sync Slack</button>
+<span class="muted" id="syncStatus" style="align-self:center"></span>
+</div>
+<div id="inboxThreads"></div>
+</div></section>
+
+<section id="calendar" class="hidden"><div class="card">
+<h2>Calendar</h2>
+<p class="muted">Everything with a deadline, laid out by day. Set a deadline from any loop's card on the Loops screen to put it here.</p>
+<div id="calendarBody"></div>
+</div></section>
+
+<section id="weeklyreport" class="hidden"><div class="card">
+<h2>Your Week with LOOP</h2>
+<div id="weeklyReportBody"></div>
+</div></section>
+
+<section id="reminders" class="hidden">
+<div class="card"><h2>Notifications</h2><div id="notiflist"></div></div>
+<div class="card">
+<h2>Reminders</h2>
+<p class="muted">Deadline and payment-follow-up reminders are created automatically when you analyze a conversation.</p>
+<select id="remclient"><option value="">No client</option></select>
+<input id="remmsg" placeholder="Reminder message">
+<input id="remat" type="datetime-local">
+<button class="btn" onclick="addReminder()">Add reminder</button>
+<div id="reminderlist"></div>
+</div>
+</section>
+
+</div></main>
+</div>
+
+<nav class="bottom-tabs" id="bottomTabs">
+<button data-view="dashboard" onclick="view('dashboard')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Home</button>
+<button data-view="inbox" onclick="view('inbox')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18v12H3z"/><path d="M3 7l9 6 9-6"/></svg>Inbox</button>
+<button data-view="loops" onclick="view('loops')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>Loops</button>
+<button data-view="analyze" onclick="view('analyze')"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/></svg>Analyze</button>
+<button onclick="toggleMoreSheet()"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg>More</button>
+</nav>
+<div id="moreSheet" class="more-sheet hidden">
+<button onclick="view('followups');closeMoreSheet()">Follow-up</button>
+<button onclick="view('clients');closeMoreSheet()">Clients</button>
+<button onclick="view('projects');closeMoreSheet()">Projects</button>
+<button onclick="view('actioncenter');closeMoreSheet()">Action Center</button>
+<button onclick="view('payments');closeMoreSheet()">Payments</button>
+<button onclick="view('invoices');closeMoreSheet()">Invoices</button>
+<button onclick="view('reminders');closeMoreSheet()">Reminders</button>
+<button onclick="view('integrations');closeMoreSheet()">Integrations</button>
+<button onclick="view('calendar');closeMoreSheet()">Calendar</button>
+<button onclick="view('weeklyreport');closeMoreSheet()">Weekly report</button>
+<button onclick="view('billing');closeMoreSheet()">Billing</button>
+<button onclick="logout()" style="color:var(--danger-text)">Log out</button>
+</div>
+
+<script>
+let token = localStorage.getItem('loop_token');
+let currentConvId = null;
+const $ = id => document.getElementById(id);
+function headers(){ return {'Content-Type':'application/json','Authorization':'Bearer '+token} }
+function esc(v){ return String(v ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m])) }
+function prioClass(p){ return p>=70?'p-high':p>=40?'p-mid':'p-low' }
+const ALL_SCREENS = ['auth','dashboard','analyze','results','followups','loops','actioncenter','clients','projects','invoices','payments','reminders','billing','integrations','inbox','calendar','weeklyreport'];
+
+function view(id){
+  if(!token && id!=='auth') return;
+  ALL_SCREENS.forEach(x => $(x).classList.add('hidden'));
+  $(id).classList.remove('hidden');
+  document.querySelectorAll('.sidebar-nav button, .bottom-tabs button').forEach(b => b.classList.toggle('active', b.dataset.view===id));
+  closeMoreSheet();
+  if(id!=='auth') refresh();
+}
+async function jumpToLoop(id){
+  view('loops');
+  // refresh() (triggered by view()) is async and repopulates #looplist —
+  // poll briefly for the card to exist rather than racing it.
+  for(let i=0;i<20;i++){
+    const el = document.getElementById('loopitem-'+id);
+    if(el){
+      el.scrollIntoView({behavior:'smooth', block:'center'});
+      el.style.transition = 'background-color 0.3s';
+      el.style.backgroundColor = 'var(--primary-tint)';
+      setTimeout(()=>{ el.style.backgroundColor = '' }, 1800);
+      return;
+    }
+    await new Promise(r=>setTimeout(r,100));
+  }
+}
+function toggleMoreSheet(){ $('moreSheet').classList.toggle('hidden') }
+function closeMoreSheet(){ $('moreSheet').classList.add('hidden') }
+
+async function api(url, opt={}){
+  const r = await fetch(url, {...opt, headers:{...(opt.headers||{}), ...headers()}});
+  const d = await r.json();
+  if(!r.ok) throw Error(d.error || 'Request failed');
+  return d;
+}
+
+async function signup(){
+  try{ const d = await api('/api/auth/signup',{method:'POST',body:JSON.stringify({email:$('email').value,password:$('password').value})});
+    token=d.token; localStorage.setItem('loop_token',token); init();
+  }catch(e){ $('authmsg').textContent = e.message }
+}
+async function login(){
+  try{ const d = await api('/api/auth/login',{method:'POST',body:JSON.stringify({email:$('email').value,password:$('password').value})});
+    token=d.token; localStorage.setItem('loop_token',token); init();
+  }catch(e){ $('authmsg').textContent = e.message }
+}
+function logout(){ token=null; localStorage.removeItem('loop_token'); location.reload() }
+
+function toggleForgotPassword(){
+  $('forgotBox').classList.toggle('hidden');
+  if(!$('forgotBox').classList.contains('hidden')) $('forgotEmail').value = $('email').value;
+}
+async function requestPasswordReset(){
+  try{
+    await api('/api/auth/forgot-password',{method:'POST',body:JSON.stringify({email:$('forgotEmail').value})});
+    $('forgotMsg').style.color = 'var(--success-text)';
+    $('forgotMsg').textContent = 'If that email exists, a reset link has been sent. Check your inbox.';
+  }catch(e){ $('forgotMsg').style.color=''; $('forgotMsg').textContent = e.message }
+}
+async function submitNewPassword(){
+  const qs = new URLSearchParams(location.search);
+  const resetToken = qs.get('token');
+  try{
+    await api('/api/auth/reset-password',{method:'POST',body:JSON.stringify({token:resetToken,password:$('newPassword').value})});
+    $('resetMsg').style.color = 'var(--success-text)';
+    $('resetMsg').textContent = 'Password reset! You can log in now.';
+    setTimeout(()=>{ history.replaceState({},'',location.pathname); $('resetBox').classList.add('hidden'); }, 1500);
+  }catch(e){ $('resetMsg').style.color=''; $('resetMsg').textContent = e.message }
+}
+(function checkForResetToken(){
+  const qs = new URLSearchParams(location.search);
+  if(qs.get('token') && location.pathname.includes('reset-password')){
+    document.addEventListener('DOMContentLoaded', ()=> $('resetBox').classList.remove('hidden'));
+  }
+})();
+async function init(){ $('auth').classList.add('hidden'); $('appshell').classList.remove('hidden'); $('logout').classList.remove('hidden'); try{await loadIntegrations()}catch(e){} try{await loadGreeting()}catch(e){} const qs=new URLSearchParams(location.search); if(qs.get('integration')&&qs.get('status')){alert(qs.get('status')==='connected'?qs.get('integration')+' connected.':(qs.get('message')||'Integration connection failed.')); history.replaceState({},'',location.pathname)} view('dashboard') }
+async function loadGreeting(){
+  const d = await api('/api/me');
+  const name = (d.user.email.split('@')[0]||'there').replace(/[._-]/g,' ');
+  const display = name.replace(/\b\w/g, c=>c.toUpperCase());
+  const hour = new Date().getHours();
+  const part = hour<12?'Good morning':hour<18?'Good afternoon':'Good evening';
+  $('greetingText').textContent = part+', '+display;
+  $('avatarCircle').textContent = display[0].toUpperCase();
+}
+
+function fillClientSelects(clients){
+  const opts = '<option value="">No client</option>' + clients.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  ['pclient','prjclient','aclient','remclient','invclient'].forEach(id => { const cur=$(id).value; $(id).innerHTML=opts; $(id).value=cur; });
+  const acOpts = '<option value="">Choose a client…</option>' + clients.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  const curAc = $('acclient').value; $('acclient').innerHTML = acOpts; $('acclient').value = curAc;
+}
+function fillProjectSelects(projects){
+  const opts = '<option value="">No project</option>' + projects.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+  ['pproject','aproject','invproject'].forEach(id => { const cur=$(id).value; $(id).innerHTML=opts; $(id).value=cur; });
+}
+
+async function refresh(){
+  try{
+    const [c,pr] = await Promise.all([api('/api/clients'),api('/api/projects')]);
+    fillClientSelects(c); fillProjectSelects(pr);
+    const active = document.querySelector('section:not(.hidden)').id;
+    if(active==='dashboard') await refreshDashboard();
+    if(active==='analyze'){ try{ const b = await api('/api/billing/status'); $('usagenote').textContent = `${b.analyses_used_this_month} / ${b.analyses_limit} analyses used this month (${b.plan} plan)`; }catch(e){} }
+    if(active==='loops') await refreshLoops(c);
+    if(active==='followups') await refreshFollowups(c);
+    if(active==='clients') $('clientlist').innerHTML = c.map(x => `<div class="item"><div class="meta"><b>${esc(x.name)}</b>${x.notes?'<div class="muted">'+esc(x.notes)+'</div>':''}</div></div>`).join('') || '<p class="muted">No clients yet.</p>';
+    if(active==='projects'){ const clientName=id=>(c.find(x=>x.id===id)||{}).name; $('projectlist').innerHTML = pr.map(x => `<div class="item"><div class="meta"><b>${esc(x.name)}</b><div class="muted">${esc(clientName(x.client_id)||'No client')}</div></div></div>`).join('') || '<p class="muted">No projects yet.</p>'; }
+    if(active==='payments' || active==='invoices' || active==='reminders') await refreshBilling(c);
+    if(active==='billing') await refreshBillingScreen();
+    if(active==='integrations') { await loadIntegrations(); }
+    if(active==='inbox') { await loadInboxThreads(c); }
+    if(active==='calendar') { await refreshCalendar(); }
+    if(active==='weeklyreport') { await refreshWeeklyReport(); }
+    if(active==='actioncenter' && $('acclient').value) await loadActionCenter();
+  }catch(e){ if(e.message.includes('Authentication')) logout() }
+}
+
+// --- Screen 1: Dashboard ---
+function fmtMoney(n){ return '$' + Number(n||0).toLocaleString('en-US') }
+
+async function refreshDashboard(){
+  const d = await api('/api/dashboard');
+
+  const s = d.stats || {};
+  $('statCritical').textContent = s.critical ?? 0;
+  $('statWaiting').textContent = s.waiting ?? 0;
+  $('statOnTrack').textContent = s.on_track ?? 0;
+  $('statPending').textContent = fmtMoney(s.pending_amount || 0);
+
+  try{
+    const cc = await api('/api/command-center');
+    $('cmdMessage').textContent = cc.message;
+    if(cc.items.length){
+      $('cmdCenter').classList.remove('hidden');
+      $('cmdItems').innerHTML = cc.items.map(t => `
+        <div class="loopcard" style="margin-bottom:10px">
+          <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">
+            <b style="font-size:15px">${esc(t.title)}</b>
+            <span class="pill ${prioClass(t.score)}">${t.score}</span>
+          </div>
+          ${t.client_name?'<div class="muted" style="margin-top:2px">'+esc(t.client_name)+(t.person_name?' · '+esc(t.person_name):'')+'</div>':''}
+          ${t.reasons.length?'<div class="muted" style="margin-top:4px">'+t.reasons.map(esc).join(' · ')+'</div>':''}
+          <div style="margin-top:6px"><b>Recommended:</b> ${esc(t.recommended_action)}</div>
+          <div id="draft-${t.id}" class="${t.draft_reply?'':'hidden'}" style="margin-top:8px">${t.draft_reply?draftBoxHTML(t.id, t.draft_reply):''}</div>
+          <div class="attn-actions">
+            <button class="btn small" onclick="draftReply(${t.id})" id="draftbtn-${t.id}">Draft reply</button>
+            <button class="btn small light" onclick="view('loops')">View loop</button>
+            <button class="btn small light" onclick="resolveLoop(${t.id})">Mark as done</button>
+          </div>
+        </div>`).join('');
+    } else {
+      $('cmdCenter').classList.add('hidden');
+    }
+  }catch(e){ $('cmdCenter').classList.add('hidden') }
+
+  for(const bucket of ['blocked','at_risk','waiting','moving']){
+    $('bucket-'+bucket).innerHTML = d.buckets[bucket].map(l => `
+      <div class="loopcard" style="cursor:pointer" onclick="jumpToLoop(${l.id})"><b>${esc(l.title)}</b>
+        ${l.client_name?'<div class="muted">'+esc(l.client_name)+(l.person_name?' · '+esc(l.person_name):'')+'</div>':''}
+        ${l.dependency?'<div class="muted">Blocked on: '+esc(l.dependency)+'</div>':''}
+      </div>`).join('') || '<p class="muted" style="margin:0">Nothing here.</p>';
+  }
+
+  const allLoops = [...d.buckets.blocked, ...d.buckets.at_risk, ...d.buckets.waiting, ...d.buckets.moving].sort((a,b)=>b.score-a.score);
+  const statusLabel = { blocked:'Blocked', at_risk:'At risk', waiting:'Waiting', moving:'On track' };
+  $('loopTableBody').innerHTML = allLoops.map(l => `
+    <tr>
+      <td><b>${esc(l.title)}</b></td>
+      <td>${l.client_name?esc(l.client_name):'<span class="muted">—</span>'}</td>
+      <td><span class="pill ${l.health==='blocked'?'p-high':l.health==='at_risk'?'p-mid':l.health==='waiting'?'':'p-low'}">${statusLabel[l.health]}</span></td>
+      <td><span class="pill ${prioClass(l.score)}">${l.score}</span></td>
+      <td class="muted">${esc(l.next_action||'—')}</td>
+    </tr>`).join('') || '<tr><td colspan="5" class="muted">No open loops — analyze a conversation to get started.</td></tr>';
+
+  const v = d.value_at_risk;
+  if(v && v.count > 0){
+    $('varcard').classList.remove('hidden');
+    $('varcard').innerHTML = `
+      <div class="var-card">
+        <div class="metric-label" style="color:var(--danger-text)"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg> Value at risk</div>
+        <div class="var-total">${fmtMoney(v.total)}</div>
+        <div class="var-sub">${v.count} open loop${v.count===1?'':'s'} tied to unresolved or stalled work</div>
+        <div class="var-breakdown">
+          ${v.by_bucket.blocked>0?`<div>Blocked: <b>${fmtMoney(v.by_bucket.blocked)}</b></div>`:''}
+          ${v.by_bucket.at_risk>0?`<div>At risk: <b>${fmtMoney(v.by_bucket.at_risk)}</b></div>`:''}
+        </div>
+      </div>`;
+  } else {
+    $('varcard').classList.add('hidden');
+  }
+
+  try{
+    const mp = await api('/api/micro-promises');
+    if(mp.count > 0){
+      $('promisecard').classList.remove('hidden');
+      $('promiselist').innerHTML = mp.micro_promises.map(l => `
+        <div class="promise-item">
+          <b>${esc(l.title)}</b> ${l.client_name?'<span class="muted">for '+esc(l.client_name)+'</span>':''}
+          <span class="pill ${prioClass(l.score)}">score ${l.score}</span>
+          <div class="promise-phrase">"${esc(l.commitment_phrase||'')}"</div>
+        </div>`).join('');
+    } else {
+      $('promisecard').classList.add('hidden');
+    }
+  }catch(e){ $('promisecard').classList.add('hidden') }
+
+  try{
+    const n = await api('/api/notifications');
+    $('bellDot').classList.toggle('hidden', n.unread===0);
+  }catch(e){}
+}
+function toggleNotifPanel(){ view('reminders') }
+
+// --- Screen 2 & 3: Analyze & Results ---
+async function analyze(){
+  $('analyzeerr').textContent = '';
+  try{
+    const d = await api('/api/analyze',{method:'POST',body:JSON.stringify({
+      conversation:$('conv').value, client_id:$('aclient').value||null, project_id:$('aproject').value||null
+    })});
+    currentConvId = d.conversation_id;
+    renderResults(d);
+    view('results');
+  }catch(e){
+    $('analyzeerr').innerHTML = esc(e.message) + (e.message.includes('Upgrade') ? ' <button class="btn small" onclick="view(\'billing\')">View plans</button>' : '');
+  }
+}
+function renderResults(d){
+  const rows = (d.loops||[]).map(l => `
+    <tr>
+      <td>${esc(l.person||'—')}</td>
+      <td>${esc(l.title)}</td>
+      <td>${esc(l.deadline||'—')}</td>
+      <td>${esc(l.dependency||'—')}</td>
+      <td><span class="pill">${esc(l.status)}</span></td>
+      <td><span class="pill ${prioClass(l.priority)}">${l.priority}</span></td>
+      <td>${esc(l.next_action||'')}</td>
+    </tr>`).join('');
+  $('resultsbody').innerHTML = `
+    <div class="bottleneck-banner"><b>Primary bottleneck:</b> ${esc(d.primary_bottleneck||'None identified')}<br>
+    <span class="muted" style="color:var(--text-3)">Overall priority: ${d.overall_priority ?? '—'}/100</span></div>
+    <p>${esc(d.summary||'')}</p>
+    <table class="results-table"><thead><tr><th>Person</th><th>Commitment</th><th>Deadline</th><th>Dependency</th><th>Status</th><th>Priority</th><th>Recommended action</th></tr></thead>
+    <tbody>${rows || '<tr><td colspan="7" class="muted">No loops detected.</td></tr>'}</tbody></table>
+    <button class="btn" style="margin-top:14px" onclick="goToFollowup()">Go to follow-up message</button>`;
+}
+function goToFollowup(){ view('followups'); setTimeout(() => openFollowup(currentConvId), 200); }
+
+// --- Screen 4: Follow-up ---
+async function refreshFollowups(clients){
+  const convs = await api('/api/conversations');
+  const clientName = id => (clients.find(x=>x.id===id)||{}).name;
+  $('convlist').innerHTML = convs.map(c => `<div class="item"><div class="meta"><b>${esc(c.summary||'Conversation #'+c.id)}</b><span class="pill">${esc(c.follow_up_status)}</span><div class="muted">${clientName(c.client_id)?esc(clientName(c.client_id))+' · ':''}${esc(c.primary_bottleneck||'')}</div></div><button class="btn small light" onclick="openFollowup(${c.id})">Open</button></div>`).join('') || '<p class="muted">No conversations analyzed yet.</p>';
+}
+async function openFollowup(id){
+  if(!id) return;
+  currentConvId = id;
+  const d = await api('/api/conversations/'+id+'/followup');
+  $('followupcard').classList.remove('hidden');
+  $('followupmeta').textContent = (d.primary_bottleneck ? 'Bottleneck: '+d.primary_bottleneck+' — ' : '') + 'Status: '+d.follow_up_status;
+  $('followuptext').value = d.follow_up_message || '';
+  $('followupsaved').textContent = '';
+}
+async function saveFollowup(){
+  await api('/api/conversations/'+currentConvId+'/followup',{method:'PATCH',body:JSON.stringify({follow_up_message:$('followuptext').value})});
+  $('followupsaved').textContent = 'Saved.';
+  refresh();
+}
+async function markFollowupSent(){
+  await api('/api/conversations/'+currentConvId+'/followup',{method:'PATCH',body:JSON.stringify({follow_up_status:'sent'})});
+  $('followupsaved').textContent = 'Marked sent.';
+  refresh();
+}
+function copyFollowup(){
+  navigator.clipboard.writeText($('followuptext').value);
+  $('followupsaved').textContent = 'Copied to clipboard.';
+}
+
+// --- Screen 5: Loops ---
+async function refreshLoops(clients){
+  const loops = await api('/api/loops');
+  const clientName = id => (clients.find(x=>x.id===id)||{}).name;
+  $('looplist').innerHTML = loops.map(x => `<div class="item" id="loopitem-${x.id}"><div class="meta"><b>${esc(x.title)}</b><span class="pill ${prioClass(x.priority)}">P${x.priority}</span>${x.score!==null?'<span class="pill '+prioClass(x.score)+'">Risk '+x.score+'</span>':''}<span class="pill">${esc(x.status)}</span><div class="muted">${clientName(x.client_id)?esc(clientName(x.client_id))+' · ':''}${x.person_name?esc(x.person_name)+' · ':''}${esc(x.next_action||'')}</div>
+    ${x.reasons&&x.reasons.length?'<div class="muted" style="margin-top:2px">'+x.reasons.map(esc).join(' · ')+'</div>':''}
+    <div id="draft-${x.id}" class="${x.draft_reply?'':'hidden'}" style="margin-top:8px">${x.draft_reply?draftBoxHTML(x.id, x.draft_reply):''}</div>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:6px">
+  <select class="btn small light" style="padding:6px 10px" onchange="setLoopStatus(${x.id}, this.value)">
+    <option value="">Set status…</option>
+    <option value="open" ${x.status==='open'?'selected':''}>Open</option>
+    <option value="in_progress" ${x.status==='in_progress'?'selected':''}>In progress</option>
+    <option value="waiting" ${x.status==='waiting'?'selected':''}>Waiting</option>
+    <option value="resolved" ${x.status==='resolved'?'selected':''}>Resolved</option>
+  </select>
+  <div style="display:flex;gap:6px;align-items:center">
+    <input type="date" class="btn small light" style="padding:6px 8px" id="deadline-${x.id}" value="${x.deadline?String(x.deadline).slice(0,10):''}">
+    <button class="btn small light" onclick="setLoopDeadline(${x.id})">Set deadline</button>
+  </div>
+  <button class="btn small" onclick="draftReply(${x.id})" id="draftbtn-${x.id}">Draft reply</button>
+  </div></div>`).join('') || '<p class="muted">No loops yet — analyze a conversation.</p>';
+}
+async function setLoopStatus(id, status){
+  if(!status) return;
+  try{ await api('/api/loops/'+id,{method:'PATCH',body:JSON.stringify({status})}); refresh(); }catch(e){ alert(e.message) }
+}
+async function setLoopDeadline(id){
+  const val = $('deadline-'+id).value;
+  try{ await api('/api/loops/'+id,{method:'PATCH',body:JSON.stringify({deadline:val||''})}); refresh(); }catch(e){ alert(e.message) }
+}
+function draftBoxHTML(id, text){
+  return `<div class="promise-item" style="border-left-color:var(--primary)">
+    <textarea id="drafttext-${id}" style="min-height:70px;margin:0 0 8px" readonly>${esc(text)}</textarea>
+    <div style="display:flex;gap:8px">
+      <button class="btn small" onclick="copyDraft(${id})">Copy</button>
+      <button class="btn small light" onclick="draftReply(${id})">Regenerate</button>
+    </div>
+  </div>`;
+}
+async function draftReply(id){
+  const btn = $('draftbtn-'+id);
+  const box = $('draft-'+id);
+  if(btn){ btn.disabled = true; btn.textContent = 'Drafting…'; }
+  try{
+    const loop = await api('/api/loops/'+id+'/draft', { method:'POST' });
+    box.innerHTML = draftBoxHTML(id, loop.draft_reply);
+    box.classList.remove('hidden');
+  }catch(e){
+    alert(e.message);
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = 'Draft reply'; }
+  }
+}
+function copyDraft(id){
+  const ta = $('drafttext-'+id);
+  navigator.clipboard.writeText(ta.value).then(()=>{
+    const btn = event.target;
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(()=>{ btn.textContent = orig }, 1500);
+  }).catch(()=>{ ta.select(); document.execCommand('copy'); });
+}
+async function resolveLoop(id){ try{ await api('/api/loops/'+id,{method:'PATCH',body:JSON.stringify({status:'resolved'})}); refresh(); }catch(e){ alert(e.message) } }
+
+// --- Action Center ---
+async function loadActionCenter(){
+  const id = $('acclient').value;
+  const body = $('acbody');
+  if(!id){ body.innerHTML=''; return; }
+  body.innerHTML = '<p class="muted">Loading…</p>';
+  try{
+    const d = await api('/api/action-center/'+id);
+    const hs = d.intelligence.health_score;
+    body.innerHTML = `
+      <div class="grid">
+        <div class="card"><div class="muted">Open loops</div><div class="stat">${d.totals.open_loops}</div></div>
+        <div class="card"><div class="muted">Pending</div><div class="stat">$${d.totals.amount_pending}</div></div>
+      </div>
+      <div class="card"><h3>Relationship health</h3>
+        <div style="display:flex;align-items:baseline;gap:8px"><span class="stat">${hs}</span><span class="muted">/ 100</span></div>
+        <div class="muted" style="margin-top:6px">
+          ${d.intelligence.open_count} open · ${d.intelligence.completed_count} completed
+          ${d.intelligence.overdue_count?' · '+d.intelligence.overdue_count+' overdue':''}
+          ${d.intelligence.pending_amount?' · $'+d.intelligence.pending_amount+' pending':''}
+        </div>
+        <div class="muted">Average response time: ${d.intelligence.avg_response_days > 0 ? d.intelligence.avg_response_days+' days' : 'n/a'}</div>
+        ${d.intelligence.last_contact?'<div class="muted">Last activity: '+new Date(d.intelligence.last_contact).toLocaleDateString()+'</div>':''}
+      </div>
+      <div class="card"><h3>Recommended next action</h3>
+        ${d.next_action ? `<b>${esc(d.next_action.title)}</b> <span class="pill ${prioClass(d.next_action.score)}">score ${d.next_action.score}</span><div class="muted">${esc(d.next_action.next_action||'')}</div>` : '<span class="muted">Nothing open for this client.</span>'}
+      </div>
+      <div class="card"><h3>Open loops</h3>
+        ${d.open_loops.map(x=>`<div class="item"><div class="meta"><b>${esc(x.title)}</b><span class="pill ${prioClass(x.score)}">score ${x.score}</span><div class="muted">${x.person_name?esc(x.person_name)+' · ':''}${esc(x.next_action||'')}</div></div><button class="btn small light" onclick="resolveLoop(${x.id});loadActionCenter()">Resolve</button></div>`).join('') || '<p class="muted">None.</p>'}
+      </div>
+      <div class="card"><h3>Payments</h3>
+        ${d.payments_pending.map(x=>`<div class="item"><div class="meta"><b>${esc(x.currency)} ${x.amount}</b><span class="pill">${esc(x.status)}</span></div><button class="btn small light" onclick="markPaid(${x.id});loadActionCenter()">Mark paid</button></div>`).join('') || '<p class="muted">Nothing pending.</p>'}
+      </div>`;
+  }catch(e){ body.innerHTML = '<p class="error">'+esc(e.message)+'</p>' }
+}
+
+// --- Clients / Projects ---
+async function addClient(){ try{ await api('/api/clients',{method:'POST',body:JSON.stringify({name:$('cname').value,notes:$('cnotes').value})}); $('cname').value=''; $('cnotes').value=''; refresh(); }catch(e){ alert(e.message) } }
+async function addProject(){ try{ await api('/api/projects',{method:'POST',body:JSON.stringify({name:$('prjname').value,client_id:$('prjclient').value||null})}); $('prjname').value=''; refresh(); }catch(e){ alert(e.message) } }
+
+// --- Payments / Invoices / Reminders ---
+async function refreshBilling(clients){
+  const clientName = id => (clients.find(x=>x.id===id)||{}).name;
+  const [payments, invoices, reminders, notifs] = await Promise.all([api('/api/payments'),api('/api/invoices'),api('/api/reminders'),api('/api/notifications')]);
+  $('paylist').innerHTML = payments.map(x => `<div class="item"><div class="meta"><b>${esc(x.currency)} ${x.amount}</b> ${clientName(x.client_id)?esc(clientName(x.client_id)):''}<span class="pill">${esc(x.status)}</span></div>${x.status!=='paid'?'<button class="btn small light" onclick="markPaid('+x.id+')">Mark paid</button>':''}</div>`).join('') || '<p class="muted">No payments yet.</p>';
+  $('invoicelist').innerHTML = invoices.map(x => `<div class="item"><div class="meta"><b>${esc(x.currency)} ${x.amount}</b> ${clientName(x.client_id)?esc(clientName(x.client_id)):''}<span class="pill">${esc(x.status)}</span></div>${x.status!=='paid'?'<button class="btn small" onclick="checkoutInvoice('+x.id+')">Send for payment</button>':''}</div>`).join('') || '<p class="muted">No invoices yet.</p>';
+  $('reminderlist').innerHTML = reminders.map(x => `<div class="item"><div class="meta">${esc(x.message)}<span class="pill">${esc(x.status)}</span><span class="pill">${esc(x.source)}</span><div class="muted">${clientName(x.client_id)?esc(clientName(x.client_id))+' · ':''}${new Date(x.remind_at).toLocaleString()}</div></div>${x.status==='pending'?'<button class="btn small light" onclick="cancelReminder('+x.id+')">Cancel</button>':''}</div>`).join('') || '<p class="muted">No reminders yet.</p>';
+  $('notiflist').innerHTML = notifs.map(x => `<div class="item"><div class="meta">${!x.read?'<b>●</b> ':''}${esc(x.message)}<div class="muted">${esc(x.created_at)}</div></div>${!x.read?'<button class="btn small light" onclick="markNotifRead('+x.id+')">Mark read</button>':''}</div>`).join('') || '<p class="muted">No notifications yet.</p>';
+}
+async function addPayment(){ try{ await api('/api/payments',{method:'POST',body:JSON.stringify({client_id:$('pclient').value||null,project_id:$('pproject').value||null,amount:Number($('pamount').value),status:$('pstatus').value})}); $('pamount').value=''; refresh(); }catch(e){ alert(e.message) } }
+async function markPaid(id){ try{ await api('/api/payments/'+id,{method:'PATCH',body:JSON.stringify({status:'paid'})}); refresh(); }catch(e){ alert(e.message) } }
+async function addInvoice(){ try{ await api('/api/invoices',{method:'POST',body:JSON.stringify({client_id:$('invclient').value||null,project_id:$('invproject').value||null,amount:Number($('invamount').value),currency:$('invcurrency').value||'USD',due_date:$('invdue').value||null})}); $('invamount').value=''; refresh(); }catch(e){ alert(e.message) } }
+async function checkoutInvoice(id){ try{ const d = await api('/api/invoices/'+id+'/checkout',{method:'POST'}); window.open(d.url,'_blank'); refresh(); }catch(e){ alert(e.message) } }
+async function addReminder(){ try{ await api('/api/reminders',{method:'POST',body:JSON.stringify({client_id:$('remclient').value||null,message:$('remmsg').value,remind_at:$('remat').value})}); $('remmsg').value=''; $('remat').value=''; refresh(); }catch(e){ alert(e.message) } }
+async function cancelReminder(id){ try{ await api('/api/reminders/'+id,{method:'PATCH'}); refresh(); }catch(e){ alert(e.message) } }
+async function markNotifRead(id){ try{ await api('/api/notifications/'+id+'/read',{method:'PATCH'}); refresh(); }catch(e){ alert(e.message) } }
+
+// --- LOOP subscription billing ---
+async function refreshBillingScreen(){
+  const d = await api('/api/billing/status');
+  const pct = Math.min(100, Math.round((d.analyses_used_this_month / d.analyses_limit) * 100));
+  const planCards = Object.entries(d.plans).map(([key,p]) => `
+    <div class="item"><div class="meta"><b>${esc(p.label)}</b> ${p.priceCents>0 ? '$'+(p.priceCents/100)+'/mo' : 'Free'}
+      <div class="muted">${p.analysesPerMonth} analyses/month</div></div>
+      ${key===d.plan ? '<span class="pill">Current plan</span>' : (key==='free' ? '' : '<button class="btn small" onclick="upgradePlan(\''+key+'\')">Upgrade</button>')}
+    </div>`).join('');
+  $('billingbody').innerHTML = `
+    <div class="card"><h3>Current plan: ${esc(d.plan)}</h3>
+      <div class="muted">${d.analyses_used_this_month} / ${d.analyses_limit} analyses used this month (${pct}%)</div>
+      ${d.plan!=='free' ? '<button class="btn light" style="margin-top:10px" onclick="cancelPlan()">Cancel subscription</button>' : ''}
+    </div>
+    <div class="card"><h3>Plans</h3>${planCards}</div>`;
+}
+async function upgradePlan(plan){
+  try{ const d = await api('/api/billing/checkout',{method:'POST',body:JSON.stringify({plan})}); window.open(d.url,'_blank'); }
+  catch(e){ alert(e.message) }
+}
+async function cancelPlan(){
+  if(!confirm('Cancel your LOOP subscription? You will drop to the Free plan.')) return;
+  try{ await api('/api/billing/cancel',{method:'POST'}); refresh(); }
+  catch(e){ alert(e.message) }
+}
+
+
+// --- Gmail + WhatsApp + Slack integrations ---
+async function loadIntegrations(){
+  try{
+    const d=await api('/api/integrations');
+    for(const p of ['gmail','whatsapp','slack']){
+      const x=d[p]; if(!x) continue;
+      const label=p==='gmail'?'Gmail':p==='whatsapp'?'WhatsApp':'Slack', st=$(p+'Status'), btn=$(p+'Btn');
+      if(!x.configured){st.textContent='Server credentials not configured';btn.textContent='Setup required';btn.disabled=true;continue}
+      if(x.connected){st.textContent='Connected'+(x.account_email?' · '+x.account_email:'');btn.textContent='Disconnect';btn.classList.remove('light');btn.onclick=()=>disconnectIntegration(p)}
+      else {st.textContent='Not connected';btn.textContent='Connect '+label;btn.disabled=false;btn.onclick=()=>connectIntegration(p)}
+    }
+    if(d.whatsapp?.metadata?.phone_number_id) $('waPhoneId').value = d.whatsapp.metadata.phone_number_id;
+  }catch(e){}
+}
+async function connectIntegration(provider){try{const d=await api('/api/integrations/'+provider+'/connect');if(d.url)location.href=d.url}catch(e){alert(e.message)}}
+async function disconnectIntegration(provider){try{await api('/api/integrations/'+provider+'/disconnect',{method:'POST'});loadIntegrations();if(provider==='gmail')$('gmailThreads').innerHTML=''}catch(e){alert(e.message)}}
+async function saveWhatsappPhoneId(){
+  try{ await api('/api/integrations/whatsapp/phone-number',{method:'POST',body:JSON.stringify({phone_number_id:$('waPhoneId').value})}); alert('Saved.'); }
+  catch(e){ alert(e.message) }
+}
+async function loadGmailThreads(){
+  try{
+    const d=await api('/api/integrations/gmail/threads?q='+encodeURIComponent($('gmailQuery').value)+'&limit=20');
+    $('gmailThreads').innerHTML=(d.threads||[]).map(t=>`<div class="thread"><b>${esc((t.messages?.[0]?.headers||[]).find(h=>h.name==='Subject')?.value||'Gmail thread')}</b><div class="muted">${esc(t.snippet||'')}</div><button class="btn light small" onclick="importGmailThread('${t.id}')">Analyze in LOOP</button></div>`).join('')||'<p class="muted">No matching threads.</p>';
+  }catch(e){$('gmailThreads').innerHTML='<p class="error">'+esc(e.message)+'</p>'}
+}
+async function importGmailThread(id){
+  try{
+    const d=await api('/api/integrations/gmail/thread/'+encodeURIComponent(id));
+    const text=(d.messages||[]).map(m=>{const h=Object.fromEntries((m.headers||[]).map(x=>[x.name.toLowerCase(),x.value]));return `From: ${h.from||''}\nTo: ${h.to||''}\nDate: ${h.date||''}\nSubject: ${h.subject||''}\n\n${m.text||''}`}).join('\n\n--- MESSAGE ---\n\n');
+    $('conv').value=text; view('analyze');
+  }catch(e){alert(e.message)}
+}
+
+// --- Unified Inbox (WhatsApp + Gmail + Slack messages, all in one place) ---
+async function syncProvider(provider){
+  $('syncStatus').textContent = 'Syncing '+provider+'…';
+  try{
+    const d = await api('/api/integrations/'+provider+'/sync',{method:'POST'});
+    $('syncStatus').textContent = `Synced ${d.synced ?? 0} message(s) from ${provider}.`;
+    await loadInboxThreads();
+  }catch(e){ $('syncStatus').textContent = ''; alert(e.message) }
+}
+function fmtDayLabel(dateStr){
+  const d = new Date(dateStr+'T00:00:00');
+  const today = new Date(); today.setHours(0,0,0,0);
+  const diffDays = Math.round((d-today)/86400000);
+  if(diffDays===0) return 'Today';
+  if(diffDays===1) return 'Tomorrow';
+  return d.toLocaleDateString('en-US',{weekday:'long', month:'short', day:'numeric'});
+}
+async function refreshWeeklyReport(){
+  const r = await api('/api/weekly-report');
+  const stat = (label, val) => `<div class="stat-card"><div><div class="stat-num">${val}</div><div class="stat-label">${esc(label)}</div></div></div>`;
+  $('weeklyReportBody').innerHTML = `
+    <div class="stat-cards">
+      ${stat('Analyses this week', r.analyses_this_week)}
+      ${stat('Loops created', r.loops_created)}
+      ${stat('Loops closed', r.loops_closed)}
+      ${stat('Still waiting', r.still_waiting)}
+      ${stat('Overdue', r.overdue)}
+      ${stat('Payments recovered', '$'+r.payments_recovered.toLocaleString())}
+    </div>
+    <div style="margin-top:16px">
+      <p><b>Average response time:</b> ${r.avg_wait_days > 0 ? r.avg_wait_days+' days' : 'No waiting loops right now'}</p>
+      ${r.biggest_bottleneck?'<p><b>Biggest bottleneck:</b> '+esc(r.biggest_bottleneck)+'</p>':''}
+      <p><b>Recommendation:</b> ${esc(r.recommendation)}</p>
+    </div>`;
+}
+async function refreshCalendar(){
+  const cal = await api('/api/calendar');
+  const dayBlock = (title, items, danger) => `
+    <div style="margin-bottom:16px">
+      <h3 style="${danger?'color:var(--danger-text)':''}">${esc(title)}</h3>
+      ${items.map(it => `<div class="item"><div class="meta"><b>${esc(it.title)}</b>
+        <div class="muted">${it.client_name?esc(it.client_name)+' · ':''}${esc(it.next_action||'')}</div>
+      </div></div>`).join('')}
+    </div>`;
+  let html = '';
+  if(cal.overdue.length) html += dayBlock('Overdue', cal.overdue, true);
+  if(cal.days.length){
+    html += cal.days.map(d => dayBlock(fmtDayLabel(d.date), d.items, false)).join('');
+  }
+  $('calendarBody').innerHTML = html || '<p class="muted">Nothing scheduled — set a deadline on a loop to see it here.</p>';
+}
+async function loadInboxThreads(clients){
+  if(!clients){ clients = await api('/api/clients'); }
+  const clientName = id => (clients.find(x=>x.id===id)||{}).name;
+  try{
+    const d = await api('/api/inbox');
+    const clientOpts = '<option value="">Assign a client…</option>' + clients.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
+    $('inboxThreads').innerHTML = (d.threads||[]).map(t => `
+      <div class="thread">
+        <b>${esc(t.contact_name || t.contact_identifier || 'Unknown')}</b>
+        <span class="pill">${esc(t.provider)}</span>
+        <span class="pill">${t.message_count} msg${t.message_count===1?'':'s'}</span>
+        ${t.analyzed_at ? '<span class="pill">analyzed</span>' : ''}
+        <div class="muted">${esc((t.body||'').slice(0,140))}</div>
+        <div class="row" style="margin-top:8px">
+          <select onchange="assignInboxThread('${t.provider}','${esc(t.thread_key)}',this.value)">${clientOpts.replace('value="'+ (t.client_id||'') +'"','value="'+(t.client_id||'')+'" selected')}</select>
+          <button class="btn small" onclick="analyzeInboxThread('${t.provider}','${esc(t.thread_key)}')">Analyze</button>
+        </div>
+      </div>`).join('') || '<p class="muted">Nothing here yet. Connect a platform and sync, or wait for WhatsApp messages to arrive automatically.</p>';
+  }catch(e){ $('inboxThreads').innerHTML = '<p class="error">'+esc(e.message)+'</p>' }
+}
+async function assignInboxThread(provider, threadKey, clientId){
+  try{ await api('/api/inbox/thread',{method:'PATCH',body:JSON.stringify({provider,thread_key:threadKey,client_id:clientId||null})}); }
+  catch(e){ alert(e.message) }
+}
+async function analyzeInboxThread(provider, threadKey){
+  try{
+    const d = await api('/api/inbox/analyze',{method:'POST',body:JSON.stringify({provider,thread_key:threadKey})});
+    currentConvId = d.conversation_id;
+    renderResults(d);
+    view('results');
+  }catch(e){ alert(e.message) }
+}
+
+if(token) init(); else view('auth');
+</script>
+</body></html>

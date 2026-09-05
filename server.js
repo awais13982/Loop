@@ -656,7 +656,7 @@ app.get("/api/weekly-report", auth, async (req, res) => {
     one("SELECT count(*)::int AS n FROM loops WHERE user_id=$1 AND created_at >= now() - interval '7 days'", [uid]),
     one("SELECT count(*)::int AS n FROM loops WHERE user_id=$1 AND status='resolved' AND last_status_change >= now() - interval '7 days'", [uid]),
     many("SELECT last_status_change FROM loops WHERE user_id=$1 AND status='waiting'", [uid]),
-    one("SELECT count(*)::int AS n FROM loops WHERE user_id=$1 AND status!='resolved' AND deadline IS NOT NULL AND deadline::date < CURRENT_DATE", [uid]),
+    one("SELECT count(*)::int AS n FROM loops WHERE user_id=$1 AND status!='resolved' AND deadline ~ '^\\d{4}-\\d{2}-\\d{2}' AND deadline::date < CURRENT_DATE", [uid]),
     one("SELECT COALESCE(sum(amount),0)::float AS n FROM payments WHERE user_id=$1 AND status='paid' AND updated_at >= now() - interval '7 days'", [uid]),
     one(`SELECT c.name, count(*)::int AS n FROM loops l JOIN clients c ON c.id=l.client_id
          WHERE l.user_id=$1 AND l.status!='resolved' GROUP BY c.name ORDER BY n DESC LIMIT 1`, [uid]),
@@ -693,7 +693,9 @@ app.get("/api/calendar", auth, async (req, res) => {
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const overdue = [], days = {};
   for (const l of loops) {
-    const d = new Date(l.deadline); d.setHours(0, 0, 0, 0);
+    const d = new Date(l.deadline);
+    if (Number.isNaN(d.getTime())) continue; // skip any pre-existing malformed deadline rather than 500ing the whole screen
+    d.setHours(0, 0, 0, 0);
     const item = { id: l.id, title: l.title, client_name: l.client_name, next_action: l.next_action, deadline: l.deadline };
     if (d < today) overdue.push(item);
     else {
@@ -730,8 +732,10 @@ app.patch("/api/loops/:id", auth, async (req, res) => {
   // loops that weren't extracted from a pasted conversation (or need a
   // correction). deadline accepts "" to clear it.
   if (req.body?.deadline !== undefined) {
+    const raw = req.body.deadline;
+    if (raw && Number.isNaN(new Date(raw).getTime())) return res.status(400).json({ error: "Invalid deadline — use a valid date." });
     sets.push(`deadline=$${i++}`);
-    params.push(req.body.deadline || null);
+    params.push(raw || null);
   }
   if (req.body?.payment_amount !== undefined) {
     sets.push(`payment_amount=$${i++}`);
@@ -1821,6 +1825,15 @@ app.get("/api/plans", (req, res) => res.json({ plans: [
 
 app.get("/api/health", (req, res) => res.json({ ok: true, aiConfigured: Boolean(process.env.OPENAI_API_KEY), stripeConfigured: Boolean(stripe), stripePricesConfigured: Object.values(STRIPE_PRICE_IDS).filter(Boolean).length === 3, integrations: { gmail: integrationConfigured("gmail"), whatsapp: integrationConfigured("whatsapp"), slack: integrationConfigured("slack") } }));
 app.get("/{*splat}", (req, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
+
+// Last-resort safety net: any unhandled error in a route (a bad date, a
+// null-pointer we didn't anticipate, etc.) lands here instead of letting
+// Express's default handler send a raw stack trace to the client.
+app.use((err, req, res, next) => {
+  console.error("[LOOP] unhandled route error:", err);
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: "Something went wrong on our end." });
+});
 
 initSchema()
   .then(() => app.listen(process.env.PORT || 3000, () => console.log("LOOP server running")))

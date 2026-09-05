@@ -181,6 +181,58 @@ app.post("/api/webhooks/whatsapp", express.raw({ type: "application/json" }), as
   res.sendStatus(200);
 });
 
+// Messenger webhook — same signature-verification approach as WhatsApp above
+// (same Meta app, same App Secret), routed by Page ID instead of phone
+// number ID since Messenger has no phone number in the picture at all.
+app.post("/api/webhooks/messenger", express.raw({ type: "application/json" }), async (req, res) => {
+  if (!process.env.META_APP_SECRET) {
+    return res.status(503).send("Messenger webhook signature verification is not configured (set META_APP_SECRET).");
+  }
+  const signature = req.headers["x-hub-signature-256"];
+  if (!signature || !signature.startsWith("sha256=")) {
+    return res.status(403).send("Missing signature.");
+  }
+  const expected = crypto.createHmac("sha256", process.env.META_APP_SECRET).update(req.body).digest("hex");
+  const provided = signature.slice("sha256=".length);
+  const expectedBuf = Buffer.from(expected, "hex");
+  const providedBuf = Buffer.from(provided, "hex");
+  if (expectedBuf.length !== providedBuf.length || !crypto.timingSafeEqual(expectedBuf, providedBuf)) {
+    return res.status(403).send("Invalid signature.");
+  }
+  let payload;
+  try { payload = JSON.parse(req.body.toString("utf8")); } catch { return res.status(400).send("Invalid JSON."); }
+
+  try {
+    for (const entry of payload.entry || []) {
+      const pageId = entry.id;
+      if (!pageId || !Array.isArray(entry.messaging)) continue;
+      const owner = await one(
+        "SELECT user_id FROM integration_connections WHERE provider='messenger' AND metadata->>'page_id'=$1",
+        [pageId]
+      );
+      if (!owner) { console.warn(`[LOOP] Messenger message for unrecognized page_id ${pageId} — no LOOP account has linked it.`); continue; }
+      for (const event of entry.messaging) {
+        // echo:true is a message LOOP's own Page sent (or an admin replying
+        // from the Page inbox directly) bouncing back through the webhook —
+        // skip it so replies don't show up mislabeled as inbound.
+        if (!event.message || event.message.is_echo || !event.message.text) continue;
+        await ingestInboxMessage(owner.user_id, "messenger", {
+          threadKey: event.sender?.id,
+          externalMessageId: event.message.mid,
+          contactName: null, // Messenger's webhook doesn't include the sender's name; would need a separate Graph API profile lookup to show one
+          contactIdentifier: event.sender?.id,
+          direction: "inbound",
+          body: event.message.text,
+          occurredAt: event.timestamp ? new Date(Number(event.timestamp)) : new Date(),
+        });
+      }
+    }
+  } catch (e) {
+    console.error("[LOOP] Messenger webhook ingestion error:", e);
+  }
+  res.sendStatus(200);
+});
+
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: "250kb" }));
 app.use(express.static(path.join(__dirname, "public")));
@@ -256,6 +308,7 @@ function integrationRedirect(provider) { return `${appUrl()}/api/integrations/${
 function integrationConfigured(provider) {
   if (provider === "gmail") return Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
   if (provider === "whatsapp") return Boolean(process.env.META_APP_ID && process.env.META_APP_SECRET);
+  if (provider === "messenger") return Boolean(process.env.META_APP_ID && process.env.META_APP_SECRET); // same Meta app as WhatsApp, different scope
   if (provider === "slack") return Boolean(process.env.SLACK_CLIENT_ID && process.env.SLACK_CLIENT_SECRET);
   return false;
 }
@@ -277,6 +330,16 @@ async function saveIntegration(userId, provider, data) {
 }
 async function getIntegration(userId, provider) { return one("SELECT * FROM integration_connections WHERE user_id=$1 AND provider=$2", [userId, provider]); }
 async function deleteIntegration(userId, provider) { await q("DELETE FROM integration_connections WHERE user_id=$1 AND provider=$2", [userId, provider]); }
+// Tells Meta to actually start sending this Page's message events to our
+// webhook — a Page isn't subscribed by default just because we have a
+// token for it. Logged, not thrown, on failure: the connection itself
+// still succeeded, and a subscription hiccup is worth surfacing to fix
+// rather than blocking the whole OAuth flow over.
+async function subscribePageToMessaging(pageId, pageAccessToken) {
+  const r = await fetch(`https://graph.facebook.com/v23.0/${pageId}/subscribed_apps?subscribed_fields=messages&access_token=${encodeURIComponent(pageAccessToken)}`, { method: "POST" });
+  const data = await r.json();
+  if (!r.ok || !data.success) console.error("[LOOP] Failed to subscribe Messenger page to webhook:", data.error?.message || data);
+}
 async function googleAccessToken(row) {
   const access = decryptSecret(row?.access_token_enc), refresh = decryptSecret(row?.refresh_token_enc);
   if (access && row.expires_at && new Date(row.expires_at).getTime() > Date.now()+60000) return access;
@@ -1505,6 +1568,7 @@ app.get("/api/integrations", auth, async (req,res) => {
   res.json({
     gmail: { configured: integrationConfigured("gmail"), connected: Boolean(by.gmail), account_email: by.gmail?.account_email || null, connected_at: by.gmail?.connected_at || null },
     whatsapp: { configured: integrationConfigured("whatsapp"), connected: Boolean(by.whatsapp), account_email: by.whatsapp?.account_email || null, connected_at: by.whatsapp?.connected_at || null, metadata: by.whatsapp?.metadata || {} },
+    messenger: { configured: integrationConfigured("messenger"), connected: Boolean(by.messenger), account_email: by.messenger?.account_email || null, connected_at: by.messenger?.connected_at || null, metadata: by.messenger?.metadata || {} },
     slack: { configured: integrationConfigured("slack"), connected: Boolean(by.slack), account_email: by.slack?.account_email || null, connected_at: by.slack?.connected_at || null, metadata: by.slack?.metadata || {} }
   });
 });
@@ -1635,6 +1699,41 @@ app.post("/api/integrations/whatsapp/phone-number", auth, async (req, res) => {
   res.json({ ok: true, phone_number_id: phoneNumberId });
 });
 app.get("/api/webhooks/whatsapp", (req,res)=>{const mode=req.query["hub.mode"],token=req.query["hub.verify_token"],challenge=req.query["hub.challenge"];if(mode==="subscribe"&&token&&token===process.env.WHATSAPP_VERIFY_TOKEN)return res.status(200).send(challenge);res.sendStatus(403);});
+
+// --- Messenger ---
+// Same Meta app/credentials as WhatsApp — just a different OAuth scope and
+// a Page instead of a phone number. Facebook Login for a Page hands back a
+// user access token; /me/accounts then exchanges that for a page-scoped
+// token per Page the user manages, which is what's actually needed to
+// send/receive messages and subscribe the page to the webhook.
+app.get("/api/integrations/messenger/connect", auth, (req,res)=>{
+  if(!integrationConfigured("messenger")) return res.status(503).json({error:"Messenger integration is not configured. Add META_APP_ID and META_APP_SECRET."});
+  const params=new URLSearchParams({client_id:process.env.META_APP_ID,redirect_uri:integrationRedirect("messenger"),response_type:"code",state:oauthState(req.user.id,"messenger"),scope:"pages_show_list,pages_messaging,pages_manage_metadata"});
+  res.json({url:`https://www.facebook.com/v23.0/dialog/oauth?${params}`});
+});
+app.get("/api/integrations/messenger/callback", async(req,res)=>{
+  try {
+    const st=readOAuthState(req.query.state,"messenger"); if(req.query.error) throw new Error(String(req.query.error));
+    const tokenUrl=new URL("https://graph.facebook.com/v23.0/oauth/access_token"); tokenUrl.search=new URLSearchParams({client_id:process.env.META_APP_ID,client_secret:process.env.META_APP_SECRET,redirect_uri:integrationRedirect("messenger"),code:String(req.query.code||"")});
+    const tr=await fetch(tokenUrl); const tok=await tr.json(); if(!tr.ok||!tok.access_token) throw new Error(tok.error?.message||"Meta authorization failed.");
+
+    const pagesR=await fetch(`https://graph.facebook.com/v23.0/me/accounts?access_token=${encodeURIComponent(tok.access_token)}`);
+    const pagesData=await pagesR.json();
+    if(!pagesR.ok) throw new Error(pagesData.error?.message||"Could not list your Facebook Pages.");
+    const pages=pagesData.data||[];
+    if(!pages.length) throw new Error("No Facebook Pages found on this account. You need to be an admin of at least one Page.");
+
+    // MVP: connect the first Page automatically. If the user manages more
+    // than one, they can switch later — a "set page" endpoint (mirroring
+    // WhatsApp's phone-number one) would be the natural next addition.
+    const page=pages[0];
+    await subscribePageToMessaging(page.id, page.access_token);
+    await saveIntegration(st.uid,"messenger",{account_email:page.name||null,access_token:page.access_token,metadata:{page_id:page.id,available_pages:pages.map(p=>({id:p.id,name:p.name}))}});
+    res.redirect(`${appUrl()}/?integration=messenger&status=connected`);
+  } catch(e) { res.redirect(`${appUrl()}/?integration=messenger&status=error&message=${encodeURIComponent(e.message)}`); }
+});
+app.post("/api/integrations/messenger/disconnect", auth, async(req,res)=>{await deleteIntegration(req.user.id,"messenger");res.json({ok:true});});
+app.get("/api/webhooks/messenger", (req,res)=>{const mode=req.query["hub.mode"],token=req.query["hub.verify_token"],challenge=req.query["hub.challenge"];if(mode==="subscribe"&&token&&token===process.env.WHATSAPP_VERIFY_TOKEN)return res.status(200).send(challenge);res.sendStatus(403);});
 
 // --- Slack ---
 // Slack bot tokens (xoxb-...) don't expire the way Google's do, so there's
@@ -1823,7 +1922,7 @@ app.get("/api/plans", (req, res) => res.json({ plans: [
   { id: "team", name: "Team", price: 49, interval: "month", analyses: 2000, loops: 50000 }
 ]}));
 
-app.get("/api/health", (req, res) => res.json({ ok: true, aiConfigured: Boolean(process.env.OPENAI_API_KEY), stripeConfigured: Boolean(stripe), stripePricesConfigured: Object.values(STRIPE_PRICE_IDS).filter(Boolean).length === 3, integrations: { gmail: integrationConfigured("gmail"), whatsapp: integrationConfigured("whatsapp"), slack: integrationConfigured("slack") } }));
+app.get("/api/health", (req, res) => res.json({ ok: true, aiConfigured: Boolean(process.env.OPENAI_API_KEY), stripeConfigured: Boolean(stripe), stripePricesConfigured: Object.values(STRIPE_PRICE_IDS).filter(Boolean).length === 3, integrations: { gmail: integrationConfigured("gmail"), whatsapp: integrationConfigured("whatsapp"), messenger: integrationConfigured("messenger"), slack: integrationConfigured("slack") } }));
 app.get("/{*splat}", (req, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
 
 // Last-resort safety net: any unhandled error in a route (a bad date, a

@@ -1092,6 +1092,20 @@ app.get("/api/action-center/:clientId", auth, async (req, res) => {
   const payments = await many("SELECT * FROM payments WHERE user_id=$1 AND client_id=$2 ORDER BY id DESC", [req.user.id, clientId]);
   const projects = await many("SELECT * FROM projects WHERE user_id=$1 AND client_id=$2", [req.user.id, clientId]);
 
+  // --- Client Relationship Intelligence ---
+  // A per-client health score built from data already on this endpoint —
+  // no new tables, just a different lens on the same loops/payments.
+  const allTimestamps = loops.map(l => new Date(l.last_status_change).getTime());
+  const lastContact = allTimestamps.length ? new Date(Math.max(...allTimestamps)).toISOString() : null;
+  const avgResponseDays = openLoops.length
+    ? openLoops.reduce((s, l) => s + (Date.now() - new Date(l.last_status_change).getTime()) / 86400000, 0) / openLoops.length
+    : 0;
+  const overdueCount = openLoops.filter(l => l.deadline && new Date(l.deadline) < new Date()).length;
+  const pendingAmount = payments.filter(p => p.status !== "paid").reduce((s, p) => s + p.amount, 0);
+
+  let healthScore = 100 - Math.min(50, avgResponseDays * 8) - Math.min(30, overdueCount * 10) - Math.min(15, pendingAmount > 0 ? 15 : 0);
+  healthScore = Math.max(0, Math.round(healthScore));
+
   res.json({
     client, projects,
     next_action: openLoops[0] || null,
@@ -1101,7 +1115,16 @@ app.get("/api/action-center/:clientId", auth, async (req, res) => {
     payments_paid: payments.filter(p => p.status === "paid"),
     totals: {
       open_loops: openLoops.length,
-      amount_pending: payments.filter(p => p.status !== "paid").reduce((s, p) => s + p.amount, 0),
+      amount_pending: pendingAmount,
+    },
+    intelligence: {
+      open_count: openLoops.length,
+      completed_count: resolvedLoops.length,
+      overdue_count: overdueCount,
+      pending_amount: pendingAmount,
+      avg_response_days: Math.round(avgResponseDays * 10) / 10,
+      last_contact: lastContact,
+      health_score: healthScore,
     },
   });
 });

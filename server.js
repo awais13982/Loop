@@ -307,6 +307,7 @@ function appUrl() { return process.env.APP_URL || "http://localhost:3000"; }
 function integrationRedirect(provider) { return `${appUrl()}/api/integrations/${provider}/callback`; }
 function integrationConfigured(provider) {
   if (provider === "gmail") return Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
+  if (provider === "outlook") return Boolean(process.env.MICROSOFT_CLIENT_ID && process.env.MICROSOFT_CLIENT_SECRET);
   if (provider === "whatsapp") return Boolean(process.env.META_APP_ID && process.env.META_APP_SECRET);
   if (provider === "messenger") return Boolean(process.env.META_APP_ID && process.env.META_APP_SECRET); // same Meta app as WhatsApp, different scope
   if (provider === "slack") return Boolean(process.env.SLACK_CLIENT_ID && process.env.SLACK_CLIENT_SECRET);
@@ -349,6 +350,22 @@ async function googleAccessToken(row) {
   const d = await r.json();
   if (!r.ok || !d.access_token) throw new Error(d.error_description || "Gmail token refresh failed.");
   await q("UPDATE integration_connections SET access_token_enc=$1,expires_at=$2 WHERE id=$3", [encryptSecret(d.access_token), new Date(Date.now()+Number(d.expires_in||3600)*1000), row.id]);
+  return d.access_token;
+}
+// Same refresh-if-needed pattern as googleAccessToken, but against
+// Microsoft's identity platform (v2.0 token endpoint). Tenant is
+// "common" by default so both work/school and personal Outlook/Hotmail
+// accounts can sign in through the same app registration.
+async function outlookAccessToken(row) {
+  const access = decryptSecret(row?.access_token_enc), refresh = decryptSecret(row?.refresh_token_enc);
+  if (access && row.expires_at && new Date(row.expires_at).getTime() > Date.now()+60000) return access;
+  if (!refresh || !process.env.MICROSOFT_CLIENT_ID || !process.env.MICROSOFT_CLIENT_SECRET) return access;
+  const tenant = process.env.MICROSOFT_TENANT_ID || "common";
+  const body = new URLSearchParams({client_id:process.env.MICROSOFT_CLIENT_ID,client_secret:process.env.MICROSOFT_CLIENT_SECRET,refresh_token:refresh,grant_type:"refresh_token",scope:"offline_access Mail.Read User.Read"});
+  const r = await fetch(`https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token`, {method:"POST",headers:{"content-type":"application/x-www-form-urlencoded"},body});
+  const d = await r.json();
+  if (!r.ok || !d.access_token) throw new Error(d.error_description || "Outlook token refresh failed.");
+  await q("UPDATE integration_connections SET access_token_enc=$1,refresh_token_enc=COALESCE($2,refresh_token_enc),expires_at=$3 WHERE id=$4", [encryptSecret(d.access_token), d.refresh_token?encryptSecret(d.refresh_token):null, new Date(Date.now()+Number(d.expires_in||3600)*1000), row.id]);
   return d.access_token;
 }
 
@@ -1567,6 +1584,7 @@ app.get("/api/integrations", auth, async (req,res) => {
   const by = Object.fromEntries(rows.map(r=>[r.provider,r]));
   res.json({
     gmail: { configured: integrationConfigured("gmail"), connected: Boolean(by.gmail), account_email: by.gmail?.account_email || null, connected_at: by.gmail?.connected_at || null },
+    outlook: { configured: integrationConfigured("outlook"), connected: Boolean(by.outlook), account_email: by.outlook?.account_email || null, connected_at: by.outlook?.connected_at || null },
     whatsapp: { configured: integrationConfigured("whatsapp"), connected: Boolean(by.whatsapp), account_email: by.whatsapp?.account_email || null, connected_at: by.whatsapp?.connected_at || null, metadata: by.whatsapp?.metadata || {} },
     messenger: { configured: integrationConfigured("messenger"), connected: Boolean(by.messenger), account_email: by.messenger?.account_email || null, connected_at: by.messenger?.connected_at || null, metadata: by.messenger?.metadata || {} },
     slack: { configured: integrationConfigured("slack"), connected: Boolean(by.slack), account_email: by.slack?.account_email || null, connected_at: by.slack?.connected_at || null, metadata: by.slack?.metadata || {} }
@@ -1922,7 +1940,109 @@ app.get("/api/plans", (req, res) => res.json({ plans: [
   { id: "team", name: "Team", price: 49, interval: "month", analyses: 2000, loops: 50000 }
 ]}));
 
-app.get("/api/health", (req, res) => res.json({ ok: true, aiConfigured: Boolean(process.env.OPENAI_API_KEY), stripeConfigured: Boolean(stripe), stripePricesConfigured: Object.values(STRIPE_PRICE_IDS).filter(Boolean).length === 3, integrations: { gmail: integrationConfigured("gmail"), whatsapp: integrationConfigured("whatsapp"), messenger: integrationConfigured("messenger"), slack: integrationConfigured("slack") } }));
+// --- Outlook integration (Microsoft Graph) ---
+// Mirrors the Gmail integration above: OAuth connect/callback/disconnect,
+// a threads/thread preview pair, and a sync route that lands conversations
+// into the same shared inbox_messages table. Graph doesn't have Gmail's
+// native "thread" object, so threads are simulated by grouping messages
+// client-side (in this route) by conversationId.
+app.get("/api/integrations/outlook/connect", auth, (req,res) => {
+  if (!integrationConfigured("outlook")) return res.status(503).json({error:"Outlook integration is not configured. Add MICROSOFT_CLIENT_ID and MICROSOFT_CLIENT_SECRET."});
+  const tenant = process.env.MICROSOFT_TENANT_ID || "common";
+  const scopes = ["offline_access","Mail.Read","User.Read"];
+  const params = new URLSearchParams({client_id:process.env.MICROSOFT_CLIENT_ID,redirect_uri:integrationRedirect("outlook"),response_type:"code",response_mode:"query",scope:scopes.join(" "),state:oauthState(req.user.id,"outlook")});
+  res.json({url:`https://login.microsoftonline.com/${tenant}/oauth2/v2.0/authorize?${params}`});
+});
+app.get("/api/integrations/outlook/callback", async (req,res) => {
+  try {
+    const st=readOAuthState(req.query.state,"outlook"); if(req.query.error) throw new Error(String(req.query.error_description||req.query.error));
+    const tenant = process.env.MICROSOFT_TENANT_ID || "common";
+    const body=new URLSearchParams({code:String(req.query.code||""),client_id:process.env.MICROSOFT_CLIENT_ID,client_secret:process.env.MICROSOFT_CLIENT_SECRET,redirect_uri:integrationRedirect("outlook"),grant_type:"authorization_code",scope:"offline_access Mail.Read User.Read"});
+    const tr=await fetch(`https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token`,{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded"},body}); const tok=await tr.json();
+    if(!tr.ok||!tok.access_token) throw new Error(tok.error_description||"Microsoft authorization failed.");
+    const pr=await fetch("https://graph.microsoft.com/v1.0/me",{headers:{Authorization:`Bearer ${tok.access_token}`}}); const prof=await pr.json();
+    if(!pr.ok) throw new Error("Could not read the connected Outlook account.");
+    await saveIntegration(st.uid,"outlook",{account_email:prof.mail||prof.userPrincipalName,access_token:tok.access_token,refresh_token:tok.refresh_token,expires_at:new Date(Date.now()+Number(tok.expires_in||3600)*1000),metadata:{}});
+    res.redirect(`${appUrl()}/?integration=outlook&status=connected`);
+  } catch(e) { res.redirect(`${appUrl()}/?integration=outlook&status=error&message=${encodeURIComponent(e.message)}`); }
+});
+app.post("/api/integrations/outlook/disconnect", auth, async(req,res)=>{await deleteIntegration(req.user.id,"outlook");res.json({ok:true});});
+
+app.get("/api/integrations/outlook/threads", auth, async(req,res)=>{
+  const row=await getIntegration(req.user.id,"outlook"); if(!row) return res.status(400).json({error:"Connect Outlook first."});
+  try {
+    const access=await outlookAccessToken(row);
+    const params=new URLSearchParams({"$top":String(Math.min(Number(req.query.limit||20),50)),"$orderby":"receivedDateTime desc","$select":"id,conversationId,subject,bodyPreview,from,receivedDateTime"});
+    if (req.query.q) params.set("$search", `"${String(req.query.q)}"`);
+    const lr=await fetch(`https://graph.microsoft.com/v1.0/me/messages?${params}`,{headers:{Authorization:`Bearer ${access}`,Prefer:'outlook.body-content-type="text"'}});
+    const list=await lr.json(); if(!lr.ok) return res.status(lr.status).json({error:list.error?.message||"Outlook request failed."});
+    const byConversation=new Map();
+    for(const m of (list.value||[])){
+      const key=m.conversationId;
+      if(!byConversation.has(key)) byConversation.set(key,{id:key,subject:m.subject||"(no subject)",snippet:m.bodyPreview||"",from:m.from?.emailAddress||null,receivedDateTime:m.receivedDateTime});
+    }
+    res.json({threads:[...byConversation.values()]});
+  } catch(e){ res.status(500).json({error:e.message||"Could not load Outlook messages."}); }
+});
+
+app.get("/api/integrations/outlook/thread/:conversationId", auth, async(req,res)=>{
+  const row=await getIntegration(req.user.id,"outlook");
+  if(!row) return res.status(400).json({error:"Connect Outlook first."});
+  try{
+    const access=await outlookAccessToken(row);
+    const params=new URLSearchParams({"$filter":`conversationId eq '${req.params.conversationId.replace(/'/g,"''")}'`,"$orderby":"receivedDateTime asc","$select":"id,subject,body,from,receivedDateTime"});
+    const r=await fetch(`https://graph.microsoft.com/v1.0/me/messages?${params}`,{headers:{Authorization:`Bearer ${access}`,Prefer:'outlook.body-content-type="text"'}});
+    const d=await r.json();
+    if(!r.ok) return res.status(r.status).json({error:d.error?.message||"Outlook thread request failed."});
+    const messages=(d.value||[]).map(m=>({id:m.id,from:m.from?.emailAddress?.address||"unknown",text:m.body?.content||""}));
+    res.json({id:req.params.conversationId,subject:d.value?.[0]?.subject||"",messages});
+  }catch(e){res.status(500).json({error:e.message||"Could not read Outlook thread."});}
+});
+
+// Same shape as the Gmail sync route: pulls recent messages, groups them
+// into conversations, and lands one inbox_messages row per conversation.
+// external_message_id = the Graph conversationId, so re-syncing is safe.
+app.post("/api/integrations/outlook/sync", auth, async (req, res) => {
+  const row = await getIntegration(req.user.id, "outlook");
+  if (!row) return res.status(400).json({ error: "Connect Outlook first." });
+  try {
+    const access = await outlookAccessToken(row);
+    const limit = Math.min(Number(req.body?.limit || 25), 50);
+    const params = new URLSearchParams({"$top":String(limit),"$orderby":"receivedDateTime desc","$select":"id,conversationId,subject,body,from,receivedDateTime"});
+    const lr = await fetch(`https://graph.microsoft.com/v1.0/me/messages?${params}`, { headers: { Authorization: `Bearer ${access}`, Prefer:'outlook.body-content-type="text"' } });
+    const list = await lr.json();
+    if (!lr.ok) return res.status(lr.status).json({ error: list.error?.message || "Outlook request failed." });
+
+    const byConversation = new Map();
+    for (const m of (list.value || [])) {
+      const key = m.conversationId;
+      if (!byConversation.has(key)) byConversation.set(key, []);
+      byConversation.get(key).push(m);
+    }
+    let synced = 0;
+    for (const [conversationId, msgs] of byConversation) {
+      msgs.sort((a,b) => new Date(a.receivedDateTime) - new Date(b.receivedDateTime));
+      const first = msgs[0], last = msgs[msgs.length-1];
+      const fromAddr = first.from?.emailAddress || {};
+      const threadText = msgs.map(m => `[${m.from?.emailAddress?.address || "unknown"}]: ${m.body?.content || ""}`).join("\n\n");
+      await ingestInboxMessage(req.user.id, "outlook", {
+        threadKey: conversationId,
+        externalMessageId: conversationId,
+        contactName: fromAddr.name || null,
+        contactIdentifier: fromAddr.address || null,
+        direction: "inbound",
+        body: threadText.slice(0, 20000),
+        occurredAt: last.receivedDateTime ? new Date(last.receivedDateTime) : new Date(),
+      });
+      synced++;
+    }
+    res.json({ synced });
+  } catch (e) {
+    res.status(500).json({ error: e.message || "Outlook sync failed." });
+  }
+});
+
+app.get("/api/health", (req, res) => res.json({ ok: true, aiConfigured: Boolean(process.env.OPENAI_API_KEY), stripeConfigured: Boolean(stripe), stripePricesConfigured: Object.values(STRIPE_PRICE_IDS).filter(Boolean).length === 3, integrations: { gmail: integrationConfigured("gmail"), outlook: integrationConfigured("outlook"), whatsapp: integrationConfigured("whatsapp"), messenger: integrationConfigured("messenger"), slack: integrationConfigured("slack") } }));
 app.get("/{*splat}", (req, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
 
 // Last-resort safety net: any unhandled error in a route (a bad date, a

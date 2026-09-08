@@ -1787,6 +1787,58 @@ app.get("/api/integrations/slack/callback", async (req, res) => {
 });
 app.post("/api/integrations/slack/disconnect", auth, async (req, res) => { await deleteIntegration(req.user.id, "slack"); res.json({ ok: true }); });
 
+// Read-only preview endpoints (mirrors Gmail/Outlook's threads + thread/:id
+// pair) so the Slack card on the Inbox screen can show channel previews
+// before the user commits to a full sync.
+app.get("/api/integrations/slack/threads", auth, async (req, res) => {
+  const row = await getIntegration(req.user.id, "slack");
+  if (!row) return res.status(400).json({ error: "Connect Slack first." });
+  const token = decryptSecret(row.access_token_enc);
+  const slackApi = async (method, params) => {
+    const r = await fetch(`https://slack.com/api/${method}?${new URLSearchParams(params)}`, { headers: { Authorization: `Bearer ${token}` } });
+    return r.json();
+  };
+  try {
+    const channels = await slackApi("conversations.list", { types: "public_channel,private_channel", limit: "50" });
+    if (!channels.ok) return res.status(400).json({ error: channels.error || "Could not list Slack channels." });
+    const threads = [];
+    for (const ch of (channels.channels || []).filter(c => c.is_member).slice(0, Math.min(Number(req.query.limit || 20), 50))) {
+      const hist = await slackApi("conversations.history", { channel: ch.id, limit: "1" });
+      const latest = hist.ok ? hist.messages?.[0] : null;
+      threads.push({ id: ch.id, subject: `#${ch.name}`, snippet: latest?.text || "(no recent messages)" });
+    }
+    res.json({ threads });
+  } catch (e) { res.status(500).json({ error: e.message || "Could not load Slack channels." }); }
+});
+
+app.get("/api/integrations/slack/thread/:channelId", auth, async (req, res) => {
+  const row = await getIntegration(req.user.id, "slack");
+  if (!row) return res.status(400).json({ error: "Connect Slack first." });
+  const token = decryptSecret(row.access_token_enc);
+  const slackApi = async (method, params) => {
+    const r = await fetch(`https://slack.com/api/${method}?${new URLSearchParams(params)}`, { headers: { Authorization: `Bearer ${token}` } });
+    return r.json();
+  };
+  try {
+    const info = await slackApi("conversations.info", { channel: req.params.channelId });
+    const hist = await slackApi("conversations.history", { channel: req.params.channelId, limit: "30" });
+    if (!hist.ok) return res.status(400).json({ error: hist.error || "Could not read Slack channel." });
+    const userNameCache = {};
+    const resolveUser = async (uid) => {
+      if (!uid) return null;
+      if (userNameCache[uid]) return userNameCache[uid];
+      const u = await slackApi("users.info", { user: uid });
+      const name = u.ok ? (u.user?.real_name || u.user?.name || uid) : uid;
+      userNameCache[uid] = name;
+      return name;
+    };
+    const msgs = (hist.messages || []).filter(m => m.text && !m.subtype).reverse();
+    const messages = [];
+    for (const m of msgs) messages.push({ id: m.ts, from: await resolveUser(m.user), text: m.text });
+    res.json({ id: req.params.channelId, subject: info.ok ? `#${info.channel?.name}` : "", messages });
+  } catch (e) { res.status(500).json({ error: e.message || "Could not read Slack channel." }); }
+});
+
 // Pulls recent messages from channels the bot has been added to into the
 // shared inbox. Polling via conversations.history rather than the Events
 // API webhook — no public URL / separate signature scheme to stand up for

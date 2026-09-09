@@ -1718,6 +1718,49 @@ app.post("/api/integrations/whatsapp/phone-number", auth, async (req, res) => {
 });
 app.get("/api/webhooks/whatsapp", (req,res)=>{const mode=req.query["hub.mode"],token=req.query["hub.verify_token"],challenge=req.query["hub.challenge"];if(mode==="subscribe"&&token&&token===process.env.WHATSAPP_VERIFY_TOKEN)return res.status(200).send(challenge);res.sendStatus(403);});
 
+// Public config for the frontend — only ever the App ID (never a secret) and
+// only if the Embedded Signup Configuration ID has been set up in Meta's
+// dashboard (Facebook Login for Business > Configurations). Coexistence
+// (linking a number that's already active on the WhatsApp Business app,
+// without disconnecting it) requires this specific flow — a plain OAuth
+// redirect isn't enough for that case.
+app.get("/api/config/whatsapp-embedded-signup", (req, res) => {
+  res.json({
+    enabled: Boolean(process.env.META_APP_ID && process.env.META_WHATSAPP_CONFIG_ID),
+    app_id: process.env.META_APP_ID || null,
+    config_id: process.env.META_WHATSAPP_CONFIG_ID || null,
+  });
+});
+
+// Exchanges the Embedded Signup authorization code for a token, and — unlike
+// the plain OAuth flow above — saves the phone_number_id the SDK handed back
+// directly, so the user never has to manually copy/paste it from Meta's
+// dashboard. This is what completes Coexistence linking for a number
+// already active on the WhatsApp Business app.
+app.post("/api/integrations/whatsapp/embedded-signup", auth, async (req, res) => {
+  const { code, waba_id, phone_number_id } = req.body || {};
+  if (!code) return res.status(400).json({ error: "Missing authorization code from Embedded Signup." });
+  if (!phone_number_id) return res.status(400).json({ error: "Missing phone_number_id from Embedded Signup — the flow may not have completed fully." });
+  if (!process.env.META_APP_ID || !process.env.META_APP_SECRET) return res.status(503).json({ error: "WhatsApp integration is not configured. Add META_APP_ID and META_APP_SECRET." });
+  try {
+    const tokenUrl = new URL("https://graph.facebook.com/v23.0/oauth/access_token");
+    tokenUrl.search = new URLSearchParams({ client_id: process.env.META_APP_ID, client_secret: process.env.META_APP_SECRET, code }).toString();
+    const tr = await fetch(tokenUrl); const tok = await tr.json();
+    if (!tr.ok || !tok.access_token) throw new Error(tok.error?.message || "Meta authorization failed.");
+    const meR = await fetch(`https://graph.facebook.com/v23.0/me?fields=id,name&access_token=${encodeURIComponent(tok.access_token)}`);
+    const me = await meR.json();
+    await saveIntegration(req.user.id, "whatsapp", {
+      account_email: me.name || null,
+      access_token: tok.access_token,
+      metadata: { meta_user_id: me.id || null, waba_id: waba_id || null, phone_number_id, linked_via: "embedded_signup" },
+    });
+    res.json({ ok: true, phone_number_id });
+  } catch (e) {
+    res.status(500).json({ error: e.message || "Embedded Signup linking failed." });
+  }
+});
+
+
 // --- Messenger ---
 // Same Meta app/credentials as WhatsApp — just a different OAuth scope and
 // a Page instead of a phone number. Facebook Login for a Page hands back a

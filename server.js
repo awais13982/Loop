@@ -27,6 +27,11 @@ function passwordPolicyError(password) {
 
 const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// Stripe is kept only for the existing client-invoice checkout flow. It is
+// NOT used for LOOP's own subscription billing (see Paddle below) — Stripe
+// does not support merchant accounts for individuals based in Pakistan, so
+// STRIPE_SECRET_KEY is expected to stay unset and that flow stays dormant
+// (returns 503) until/unless it's revisited.
 const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
 
 const STRIPE_PRICE_IDS = {
@@ -35,12 +40,48 @@ const STRIPE_PRICE_IDS = {
   team: process.env.STRIPE_PRICE_TEAM || "",
 };
 
+// --- Paddle: this is what actually powers LOOP's own subscription billing
+// (Pro/Business/Team). Paddle is a Merchant of Record, so it handles global
+// tax/compliance and pays out to sellers in Pakistan, unlike Stripe.
+const PADDLE_API_KEY = process.env.PADDLE_API_KEY || "";
+const PADDLE_API_BASE = "https://api.paddle.com"; // live account
+const PADDLE_PRICE_IDS = {
+  pro: process.env.PADDLE_PRICE_PRO || "",
+  business: process.env.PADDLE_PRICE_BUSINESS || "",
+  team: process.env.PADDLE_PRICE_TEAM || "",
+};
+const paddleConfigured = Boolean(PADDLE_API_KEY);
+
+// Thin helper for calling the Paddle REST API. Throws on any non-2xx so
+// callers can catch/log a single error shape.
+async function paddleApi(pathSuffix, options = {}) {
+  const res = await fetch(`${PADDLE_API_BASE}${pathSuffix}`, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${PADDLE_API_KEY}`,
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = data?.error?.detail || data?.error?.code || JSON.stringify(data);
+    throw new Error(`Paddle API error (${res.status}): ${detail}`);
+  }
+  return data.data;
+}
+
+// Maps a Paddle price ID back to LOOP's internal plan key (pro/business/team).
+function paddlePlanForPriceId(priceId) {
+  return Object.entries(PADDLE_PRICE_IDS).find(([, id]) => id && id === priceId)?.[0] || null;
+}
+
 const requireVerification = process.env.REQUIRE_EMAIL_VERIFICATION === "true";
 
 // LOOP's own subscription tiers (separate from the Stripe invoicing your
 // users send to their own clients — this is what YOU charge for LOOP).
 const PLAN_LIMITS = {
-  free:     { label: "Free",     analysesPerMonth: 5,    priceCents: 0 },
+  free:     { label: "Free",     analysesPerMonth: 10,   priceCents: 0 },
   pro:      { label: "Pro",      analysesPerMonth: 100,  priceCents: 900 },
   business: { label: "Business", analysesPerMonth: 500,  priceCents: 1900 },
   team:     { label: "Team",     analysesPerMonth: 2000, priceCents: 4900 },
@@ -115,6 +156,79 @@ app.post("/api/webhooks/stripe", express.raw({ type: "application/json" }), asyn
   if (event.type === "customer.subscription.deleted") {
     const sub = event.data.object;
     await q("UPDATE users SET plan='free', stripe_subscription_id=NULL, plan_renews_at=NULL WHERE stripe_subscription_id=$1", [sub.id]);
+  }
+
+  res.json({ received: true });
+});
+
+// --- Paddle webhook: needs the RAW body for signature verification, same
+// reason as the Stripe webhook above. This is what keeps a user's `plan`
+// in sync with what they're actually subscribed to in Paddle.
+app.post("/api/webhooks/paddle", express.raw({ type: "application/json" }), async (req, res) => {
+  if (!process.env.PADDLE_WEBHOOK_SECRET) {
+    return res.status(503).send("Paddle webhook signature verification is not configured (set PADDLE_WEBHOOK_SECRET).");
+  }
+  // Paddle's signature header looks like: "ts=1712345678;h1=<hex hmac>"
+  // and the signed payload is `${ts}:${rawBody}` using HMAC-SHA256.
+  const sigHeader = req.headers["paddle-signature"] || "";
+  const parts = Object.fromEntries(
+    String(sigHeader).split(";").map((kv) => kv.split("=")).filter((kv) => kv.length === 2)
+  );
+  const ts = parts.ts;
+  const h1 = parts.h1;
+  if (!ts || !h1) return res.status(400).send("Missing Paddle-Signature header.");
+  const rawBody = req.body; // Buffer, thanks to express.raw() above
+  const expected = crypto
+    .createHmac("sha256", process.env.PADDLE_WEBHOOK_SECRET)
+    .update(`${ts}:${rawBody.toString("utf8")}`)
+    .digest("hex");
+  const expectedBuf = Buffer.from(expected, "utf8");
+  const gotBuf = Buffer.from(h1, "utf8");
+  if (expectedBuf.length !== gotBuf.length || !crypto.timingSafeEqual(expectedBuf, gotBuf)) {
+    return res.status(400).send("Webhook signature verification failed.");
+  }
+
+  let event;
+  try {
+    event = JSON.parse(rawBody.toString("utf8"));
+  } catch (e) {
+    return res.status(400).send("Invalid JSON body.");
+  }
+
+  const type = event?.event_type;
+  const data = event?.data;
+
+  if (type === "subscription.created" || type === "subscription.updated") {
+    const priceId = data?.items?.[0]?.price?.id;
+    const plan = paddlePlanForPriceId(priceId);
+    const userId = data?.custom_data?.loop_user_id;
+    const customerId = data?.customer_id || null;
+    const subId = data?.id || null;
+    const status = data?.status; // active, trialing, past_due, paused, canceled
+    const renewAt = data?.current_billing_period?.ends_at ? new Date(data.current_billing_period.ends_at) : null;
+
+    if (plan && ["active", "trialing", "past_due"].includes(status)) {
+      if (userId) {
+        await q(
+          "UPDATE users SET plan=$1, paddle_customer_id=$2, paddle_subscription_id=$3, plan_renews_at=$4 WHERE id=$5",
+          [plan, customerId, subId, renewAt, userId]
+        );
+      } else {
+        await q(
+          "UPDATE users SET plan=$1, paddle_customer_id=$2, plan_renews_at=$3 WHERE paddle_subscription_id=$4 OR paddle_customer_id=$2",
+          [plan, customerId, renewAt, subId]
+        );
+      }
+    } else if (status === "canceled" || status === "paused") {
+      await q("UPDATE users SET plan='free', paddle_subscription_id=NULL, plan_renews_at=NULL WHERE paddle_subscription_id=$1", [subId]);
+    } else {
+      await q("UPDATE users SET plan_renews_at=$1 WHERE paddle_subscription_id=$2", [renewAt, subId]);
+    }
+  }
+
+  if (type === "subscription.canceled") {
+    const subId = data?.id;
+    await q("UPDATE users SET plan='free', paddle_subscription_id=NULL, plan_renews_at=NULL WHERE paddle_subscription_id=$1", [subId]);
   }
 
   res.json({ received: true });
@@ -539,6 +653,8 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS plan TEXT DEFAULT 'free';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_subscription_id TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_renews_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS paddle_customer_id TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS paddle_subscription_id TEXT;
 ALTER TABLE loops ADD COLUMN IF NOT EXISTS person_id INTEGER REFERENCES people(id) ON DELETE SET NULL;
 ALTER TABLE loops ADD COLUMN IF NOT EXISTS dependency TEXT;
 ALTER TABLE loops ADD COLUMN IF NOT EXISTS is_bottleneck BOOLEAN DEFAULT false;
@@ -1417,63 +1533,71 @@ app.get("/api/billing/status", auth, async (req, res) => {
     analyses_used_this_month: used,
     analyses_limit: PLAN_LIMITS[plan]?.analysesPerMonth ?? PLAN_LIMITS.free.analysesPerMonth,
     plans: PLAN_LIMITS,
+    // The frontend needs these to open the Paddle.js checkout overlay itself
+    // (Paddle, unlike Stripe, does not hand back a plain redirect URL from
+    // the server for subscription checkout).
+    paddleClientToken: process.env.PADDLE_CLIENT_TOKEN || null,
+    paddlePriceIds: PADDLE_PRICE_IDS,
   });
 });
 
+// Existing subscriber changing plan: update the live Paddle subscription's
+// price in place (Paddle prorates automatically), same idea as the old
+// Stripe "update in place" path. New subscribers are handled entirely by
+// the frontend opening Paddle's checkout overlay (see index.html) — this
+// endpoint only covers the "already subscribed, changing tier" case.
 app.post("/api/billing/checkout", auth, async (req, res) => {
   const plan = String(req.body?.plan || "");
   if (!["pro", "business", "team"].includes(plan)) return res.status(400).json({ error: "Invalid plan." });
-  if (!stripe) return res.status(503).json({ error: "Stripe is not configured on this server. Set STRIPE_SECRET_KEY in .env." });
-  if (!STRIPE_PRICE_IDS[plan]) return res.status(503).json({ error: `Stripe price for ${plan} is not configured. Set STRIPE_PRICE_${plan.toUpperCase()} in .env.` });
+  if (!paddleConfigured) return res.status(503).json({ error: "Paddle is not configured on this server. Set PADDLE_API_KEY in .env." });
+  if (!PADDLE_PRICE_IDS[plan]) return res.status(503).json({ error: `Paddle price for ${plan} is not configured. Set PADDLE_PRICE_${plan.toUpperCase()} in .env.` });
   try {
-    const user = await one("SELECT id,email,plan,stripe_customer_id,stripe_subscription_id FROM users WHERE id=$1", [req.user.id]);
-    const appUrl = process.env.APP_URL || "http://localhost:3000";
+    const user = await one("SELECT id,email,plan,paddle_customer_id,paddle_subscription_id FROM users WHERE id=$1", [req.user.id]);
 
-    // Existing subscriber: change the existing subscription instead of creating
-    // a second subscription. This makes upgrades/downgrades idempotent.
-    if (user?.stripe_subscription_id) {
-      const sub = await stripe.subscriptions.retrieve(user.stripe_subscription_id);
-      if (!["active", "trialing", "past_due"].includes(sub.status)) {
-        await q("UPDATE users SET stripe_subscription_id=NULL WHERE id=$1", [req.user.id]);
-      } else {
-        const item = sub.items.data[0];
-        if (!item) throw new Error("Stripe subscription has no billable item.");
-        const updated = await stripe.subscriptions.update(sub.id, {
-          items: [{ id: item.id, price: STRIPE_PRICE_IDS[plan] }],
-          metadata: { loop_plan: plan, loop_user_id: String(req.user.id) },
-          cancel_at_period_end: false,
-          proration_behavior: "create_prorations",
+    if (user?.paddle_subscription_id) {
+      try {
+        const updated = await paddleApi(`/subscriptions/${user.paddle_subscription_id}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            items: [{ price_id: PADDLE_PRICE_IDS[plan], quantity: 1 }],
+            proration_billing_mode: "prorated_immediately",
+          }),
         });
-        const renewAt = updated.current_period_end ? new Date(Number(updated.current_period_end) * 1000) : null;
+        const renewAt = updated?.current_billing_period?.ends_at ? new Date(updated.current_billing_period.ends_at) : null;
         await q("UPDATE users SET plan=$1, plan_renews_at=$2 WHERE id=$3", [plan, renewAt, req.user.id]);
         return res.json({ ok: true, upgraded: true, plan, subscription_id: updated.id });
+      } catch (e) {
+        // Subscription may have been canceled/expired on Paddle's side; fall
+        // through to a fresh checkout in that case rather than erroring out.
+        console.warn("[LOOP] Paddle subscription update failed, clearing stale subscription id:", e.message);
+        await q("UPDATE users SET paddle_subscription_id=NULL WHERE id=$1", [req.user.id]);
       }
     }
 
-    const session = await stripe.checkout.sessions.create({
-      mode: "subscription",
-      customer: user?.stripe_customer_id || undefined,
-      customer_email: user?.stripe_customer_id ? undefined : user?.email,
-      line_items: [{ price: STRIPE_PRICE_IDS[plan], quantity: 1 }],
-      success_url: `${appUrl}/?billing=success`,
-      cancel_url: `${appUrl}/?billing=cancelled`,
-      metadata: { loop_plan: plan, loop_user_id: String(req.user.id) },
-      subscription_data: { metadata: { loop_plan: plan, loop_user_id: String(req.user.id) } },
+    // No active Paddle subscription: hand the frontend what it needs to open
+    // the Paddle.js checkout overlay itself.
+    res.json({
+      priceId: PADDLE_PRICE_IDS[plan],
+      plan,
+      customerEmail: user?.email || null,
+      customData: { loop_plan: plan, loop_user_id: String(req.user.id) },
     });
-    res.json({ url: session.url });
   } catch (e) {
-    console.error("[LOOP] Stripe checkout/update failed:", e);
-    res.status(500).json({ error: "Could not start the Stripe subscription." });
+    console.error("[LOOP] Paddle checkout/update failed:", e);
+    res.status(500).json({ error: "Could not start the Paddle subscription." });
   }
 });
 
 app.post("/api/billing/cancel", auth, async (req, res) => {
-  if (!stripe) return res.status(503).json({ error: "Stripe is not configured on this server." });
-  const u = await one("SELECT stripe_subscription_id FROM users WHERE id=$1", [req.user.id]);
-  if (!u?.stripe_subscription_id) return res.status(400).json({ error: "No active subscription to cancel." });
+  if (!paddleConfigured) return res.status(503).json({ error: "Paddle is not configured on this server." });
+  const u = await one("SELECT paddle_subscription_id FROM users WHERE id=$1", [req.user.id]);
+  if (!u?.paddle_subscription_id) return res.status(400).json({ error: "No active subscription to cancel." });
   try {
-    const sub = await stripe.subscriptions.update(u.stripe_subscription_id, { cancel_at_period_end: true });
-    const renewAt = sub.current_period_end ? new Date(Number(sub.current_period_end) * 1000) : null;
+    const sub = await paddleApi(`/subscriptions/${u.paddle_subscription_id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ scheduled_change: { action: "cancel", effective_at: "next_billing_period" } }),
+    });
+    const renewAt = sub?.current_billing_period?.ends_at ? new Date(sub.current_billing_period.ends_at) : null;
     await q("UPDATE users SET plan_renews_at=$1 WHERE id=$2", [renewAt, req.user.id]);
     res.json({ ok: true, cancel_at_period_end: true, plan_renews_at: renewAt });
   } catch (e) {
@@ -2137,7 +2261,7 @@ app.post("/api/integrations/outlook/sync", auth, async (req, res) => {
   }
 });
 
-app.get("/api/health", (req, res) => res.json({ ok: true, aiConfigured: Boolean(process.env.OPENAI_API_KEY), stripeConfigured: Boolean(stripe), stripePricesConfigured: Object.values(STRIPE_PRICE_IDS).filter(Boolean).length === 3, integrations: { gmail: integrationConfigured("gmail"), outlook: integrationConfigured("outlook"), whatsapp: integrationConfigured("whatsapp"), messenger: integrationConfigured("messenger"), slack: integrationConfigured("slack") } }));
+app.get("/api/health", (req, res) => res.json({ ok: true, aiConfigured: Boolean(process.env.OPENAI_API_KEY), stripeConfigured: Boolean(stripe), stripePricesConfigured: Object.values(STRIPE_PRICE_IDS).filter(Boolean).length === 3, paddleConfigured, paddlePricesConfigured: Object.values(PADDLE_PRICE_IDS).filter(Boolean).length === 3, integrations: { gmail: integrationConfigured("gmail"), outlook: integrationConfigured("outlook"), whatsapp: integrationConfigured("whatsapp"), messenger: integrationConfigured("messenger"), slack: integrationConfigured("slack") } }));
 app.get("/{*splat}", (req, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
 
 // Last-resort safety net: any unhandled error in a route (a bad date, a

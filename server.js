@@ -648,6 +648,16 @@ CREATE TABLE IF NOT EXISTS usage_events(
  created_at TIMESTAMPTZ DEFAULT now(),
  UNIQUE(user_id, event_type, reference_id)
 );
+CREATE TABLE IF NOT EXISTS sent_replies(
+ id SERIAL PRIMARY KEY,
+ user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ provider TEXT NOT NULL,
+ thread_key TEXT NOT NULL,
+ recipient TEXT,
+ body TEXT NOT NULL,
+ external_id TEXT,
+ sent_at TIMESTAMPTZ DEFAULT now()
+);
 -- Safe migrations for databases created by earlier LOOP versions.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS plan TEXT DEFAULT 'free';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT;
@@ -1707,17 +1717,17 @@ app.get("/api/integrations", auth, async (req,res) => {
   const rows = await many("SELECT provider,account_email,expires_at,metadata,connected_at FROM integration_connections WHERE user_id=$1", [req.user.id]);
   const by = Object.fromEntries(rows.map(r=>[r.provider,r]));
   res.json({
-    gmail: { configured: integrationConfigured("gmail"), connected: Boolean(by.gmail), account_email: by.gmail?.account_email || null, connected_at: by.gmail?.connected_at || null },
+    gmail: { configured: integrationConfigured("gmail"), connected: Boolean(by.gmail), account_email: by.gmail?.account_email || null, connected_at: by.gmail?.connected_at || null, can_send: Boolean(by.gmail) && String(by.gmail?.metadata?.scope || "").includes("gmail.send") },
     outlook: { configured: integrationConfigured("outlook"), connected: Boolean(by.outlook), account_email: by.outlook?.account_email || null, connected_at: by.outlook?.connected_at || null },
     whatsapp: { configured: integrationConfigured("whatsapp"), connected: Boolean(by.whatsapp), account_email: by.whatsapp?.account_email || null, connected_at: by.whatsapp?.connected_at || null, metadata: by.whatsapp?.metadata || {} },
     messenger: { configured: integrationConfigured("messenger"), connected: Boolean(by.messenger), account_email: by.messenger?.account_email || null, connected_at: by.messenger?.connected_at || null, metadata: by.messenger?.metadata || {} },
-    slack: { configured: integrationConfigured("slack"), connected: Boolean(by.slack), account_email: by.slack?.account_email || null, connected_at: by.slack?.connected_at || null, metadata: by.slack?.metadata || {} }
+    slack: { configured: integrationConfigured("slack"), connected: Boolean(by.slack), account_email: by.slack?.account_email || null, connected_at: by.slack?.connected_at || null, metadata: by.slack?.metadata || {}, can_send: Boolean(by.slack) && String(by.slack?.metadata?.scope || "").split(",").includes("chat:write") }
   });
 });
 
 app.get("/api/integrations/gmail/connect", auth, (req,res) => {
   if (!integrationConfigured("gmail")) return res.status(503).json({error:"Gmail integration is not configured. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET."});
-  const scopes = ["https://www.googleapis.com/auth/gmail.readonly"];
+  const scopes = ["https://www.googleapis.com/auth/gmail.readonly","https://www.googleapis.com/auth/gmail.send"];
   const params = new URLSearchParams({client_id:process.env.GOOGLE_CLIENT_ID,redirect_uri:integrationRedirect("gmail"),response_type:"code",access_type:"offline",prompt:"consent",include_granted_scopes:"true",scope:scopes.join(" "),state:oauthState(req.user.id,"gmail")});
   res.json({url:`https://accounts.google.com/o/oauth2/v2/auth?${params}`});
 });
@@ -1729,7 +1739,7 @@ app.get("/api/integrations/gmail/callback", async (req,res) => {
     if(!tr.ok||!tok.access_token) throw new Error(tok.error_description||"Google authorization failed.");
     const pr=await fetch("https://gmail.googleapis.com/gmail/v1/users/me/profile",{headers:{Authorization:`Bearer ${tok.access_token}`}}); const prof=await pr.json();
     if(!pr.ok) throw new Error("Could not read the connected Gmail account.");
-    await saveIntegration(st.uid,"gmail",{account_email:prof.emailAddress,access_token:tok.access_token,refresh_token:tok.refresh_token,expires_at:new Date(Date.now()+Number(tok.expires_in||3600)*1000),metadata:{historyId:prof.historyId||null}});
+    await saveIntegration(st.uid,"gmail",{account_email:prof.emailAddress,access_token:tok.access_token,refresh_token:tok.refresh_token,expires_at:new Date(Date.now()+Number(tok.expires_in||3600)*1000),metadata:{historyId:prof.historyId||null,scope:String(tok.scope||"")}});
     res.redirect(`${appUrl()}/?integration=gmail&status=connected`);
   } catch(e) { res.redirect(`${appUrl()}/?integration=gmail&status=error&message=${encodeURIComponent(e.message)}`); }
 });
@@ -1927,7 +1937,7 @@ app.get("/api/integrations/slack/connect", auth, (req, res) => {
   if (!integrationConfigured("slack")) return res.status(503).json({ error: "Slack integration is not configured. Add SLACK_CLIENT_ID and SLACK_CLIENT_SECRET." });
   const params = new URLSearchParams({
     client_id: process.env.SLACK_CLIENT_ID,
-    scope: "channels:history,channels:read,groups:history,groups:read,users:read",
+    scope: "channels:history,channels:read,groups:history,groups:read,users:read,chat:write",
     redirect_uri: integrationRedirect("slack"),
     state: oauthState(req.user.id, "slack"),
   });
@@ -1947,7 +1957,7 @@ app.get("/api/integrations/slack/callback", async (req, res) => {
     await saveIntegration(st.uid, "slack", {
       account_email: tok.team?.name || null,
       access_token: tok.access_token, // bot token — no refresh_token in this flow
-      metadata: { team_id: tok.team?.id || null, team_name: tok.team?.name || null },
+      metadata: { team_id: tok.team?.id || null, team_name: tok.team?.name || null, scope: String(tok.scope || "") },
     });
     res.redirect(`${appUrl()}/?integration=slack&status=connected`);
   } catch (e) { res.redirect(`${appUrl()}/?integration=slack&status=error&message=${encodeURIComponent(e.message)}`); }
@@ -2151,6 +2161,162 @@ app.post("/api/inbox/analyze", auth, async (req, res) => {
   }
 });
 
+
+// --- Send replies from the Inbox (Gmail + Slack) ---
+// Nothing here ever sends on its own: the user reviews/edits a draft and
+// taps Send. Every reply that goes out is written to sent_replies so
+// there's a record of exactly what LOOP sent on the user's behalf.
+const REPLY_PROVIDERS = ["gmail", "slack"];
+const MAX_REPLY_LENGTH = 5000;
+const sendLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false,
+  keyGenerator: (req) => `user-${req.user?.id || "anon"}`,
+  message: { error: "You've sent a lot of replies in the last hour. Please wait a bit before sending more." },
+});
+
+// Strips CR/LF so a header value can never smuggle in extra headers.
+function cleanHeader(v) { return String(v || "").replace(/[\r\n]+/g, " ").trim(); }
+// RFC 2047 encoding so non-ASCII subjects (Urdu/Arabic) survive intact.
+function encodeSubject(subject) {
+  const clean = cleanHeader(subject);
+  return /^[\x20-\x7e]*$/.test(clean) ? clean : `=?UTF-8?B?${Buffer.from(clean, "utf8").toString("base64")}?=`;
+}
+function wrapBase64(buf) { return buf.toString("base64").replace(/(.{76})/g, "$1\r\n"); }
+
+async function ownedInboxThread(userId, provider, threadKey) {
+  return one("SELECT 1 AS ok FROM inbox_messages WHERE user_id=$1 AND provider=$2 AND thread_key=$3 LIMIT 1", [userId, provider, threadKey]);
+}
+async function logSentReply(userId, provider, threadKey, recipient, body, externalId) {
+  await q("INSERT INTO sent_replies(user_id,provider,thread_key,recipient,body,external_id) VALUES($1,$2,$3,$4,$5,$6)",
+    [userId, provider, threadKey, recipient || null, body, externalId || null]);
+}
+
+// AI-suggested reply for a whole inbox thread. Same philosophy as the loop
+// drafts: a suggestion the user edits, never an action taken for them.
+app.post("/api/inbox/draft", auth, async (req, res) => {
+  const { provider, thread_key } = req.body || {};
+  if (!provider || !thread_key) return res.status(400).json({ error: "provider and thread_key are required." });
+  if (!process.env.OPENAI_API_KEY) return res.status(503).json({ error: "AI is not configured on this server." });
+  const messages = await many(
+    "SELECT contact_name, direction, body FROM inbox_messages WHERE user_id=$1 AND provider=$2 AND thread_key=$3 ORDER BY occurred_at ASC",
+    [req.user.id, provider, thread_key]
+  );
+  if (!messages.length) return res.status(404).json({ error: "No messages found for this thread." });
+  const transcript = messages.map(m => `[${m.direction === "outbound" ? "Me" : (m.contact_name || "Them")}]: ${m.body}`).join("\n\n").slice(-6000);
+  try {
+    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: process.env.OPENAI_BASE_URL || undefined });
+    const system = `You draft a reply on behalf of a freelancer to the latest message in a conversation. Write ONLY the reply body — no subject line, no placeholder brackets, no explanation, no markdown, no quotes around it. Reply in the same language the other person used. Keep it under 120 words, friendly but direct, and specific to what was actually said. Do not invent facts, prices, dates, or commitments that are not in the conversation; if something is unknown, ask a short question instead.`;
+    const response = await client.chat.completions.create({
+      model: process.env.OPENAI_MODEL || "llama-3.3-70b-versatile",
+      messages: [{ role: "system", content: system }, { role: "user", content: transcript }],
+    });
+    res.json({ draft: response.choices[0].message.content.trim() });
+  } catch (e) {
+    console.error("[LOOP] inbox draft failed:", e.message);
+    res.status(502).json({ error: "Could not generate a draft right now. Try again in a moment." });
+  }
+});
+
+app.post("/api/inbox/reply", auth, sendLimiter, async (req, res) => {
+  const { provider, thread_key } = req.body || {};
+  const text = String(req.body?.body || "").trim();
+  if (!provider || !thread_key) return res.status(400).json({ error: "provider and thread_key are required." });
+  if (!REPLY_PROVIDERS.includes(provider)) return res.status(501).json({ error: `Sending replies from ${provider} isn't available yet.` });
+  if (!text) return res.status(400).json({ error: "Write a reply first." });
+  if (text.length > MAX_REPLY_LENGTH) return res.status(400).json({ error: `Replies can be at most ${MAX_REPLY_LENGTH} characters.` });
+  if (!(await ownedInboxThread(req.user.id, provider, String(thread_key)))) return res.status(404).json({ error: "Thread not found." });
+  const row = await getIntegration(req.user.id, provider);
+  if (!row) return res.status(400).json({ error: `Connect ${provider === "gmail" ? "Gmail" : "Slack"} first.` });
+
+  try {
+    if (provider === "gmail") {
+      const access = await googleAccessToken(row);
+      const tr = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/threads/${encodeURIComponent(thread_key)}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Reply-To&metadataHeaders=Subject&metadataHeaders=Message-ID&metadataHeaders=References`, { headers: { Authorization: `Bearer ${access}` } });
+      const thread = await tr.json();
+      if (!tr.ok) return res.status(tr.status === 403 ? 403 : 502).json({ error: thread.error?.message || "Could not read the Gmail thread.", needs_reconnect: tr.status === 403 });
+      const msgs = thread.messages || [];
+      if (!msgs.length) return res.status(404).json({ error: "That Gmail thread is empty." });
+      const hv = (m, name) => (m.payload?.headers || []).find(h => h.name?.toLowerCase() === name.toLowerCase())?.value || "";
+      const me = String(row.account_email || "").toLowerCase();
+      const isMine = (m) => me && hv(m, "From").toLowerCase().includes(me);
+      // Reply to the most recent message that wasn't from the user. If the
+      // user wrote every message so far, follow up to whoever they wrote to.
+      const target = [...msgs].reverse().find(m => !isMine(m)) || msgs[msgs.length - 1];
+      const last = msgs[msgs.length - 1];
+      const toRaw = isMine(target) ? hv(target, "To") : (hv(target, "Reply-To") || hv(target, "From"));
+      const toAddr = (toRaw.match(/<([^>]+)>/) || toRaw.match(/([\w.+-]+@[\w.-]+\.[A-Za-z]{2,})/) || [])[1];
+      if (!toAddr || !/^[^\s<>,;]+@[^\s<>,;]+\.[^\s<>,;]+$/.test(toAddr)) return res.status(422).json({ error: "Couldn't work out who to reply to on this thread." });
+      const baseSubject = hv(msgs[0], "Subject") || "(no subject)";
+      const subject = /^re:/i.test(baseSubject.trim()) ? baseSubject : `Re: ${baseSubject}`;
+      const lastMsgId = cleanHeader(hv(last, "Message-ID"));
+      const refs = [cleanHeader(hv(last, "References")), lastMsgId].filter(Boolean).join(" ");
+      const mime = [
+        `To: ${cleanHeader(toAddr)}`,
+        `Subject: ${encodeSubject(subject)}`,
+        lastMsgId ? `In-Reply-To: ${lastMsgId}` : null,
+        refs ? `References: ${refs}` : null,
+        "MIME-Version: 1.0",
+        'Content-Type: text/plain; charset="UTF-8"',
+        "Content-Transfer-Encoding: base64",
+        "",
+        wrapBase64(Buffer.from(text, "utf8")),
+      ].filter(v => v !== null).join("\r\n");
+      const raw = Buffer.from(mime, "utf8").toString("base64url");
+      const sr = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+        method: "POST", headers: { Authorization: `Bearer ${access}`, "content-type": "application/json" },
+        body: JSON.stringify({ raw, threadId: thread.id }),
+      });
+      const sent = await sr.json();
+      if (!sr.ok) {
+        const needs = sr.status === 403 || sr.status === 401;
+        return res.status(needs ? 403 : 502).json({
+          error: needs ? "LOOP doesn't have permission to send email yet. Disconnect and reconnect Gmail, and approve the 'send email' permission." : (sent.error?.message || "Gmail couldn't send the reply."),
+          needs_reconnect: needs,
+        });
+      }
+      await logSentReply(req.user.id, "gmail", String(thread_key), toAddr, text, sent.id);
+      // Gmail threads live as ONE row (the whole conversation), so we append
+      // the reply to that row instead of adding a new one — that keeps
+      // Analyze reading the full thread, and flips it to "answered".
+      await q(
+        `UPDATE inbox_messages SET body=LEFT(body || E'\\n\\n[You]: ' || $1, 20000), direction='outbound', occurred_at=now()
+         WHERE user_id=$2 AND provider='gmail' AND thread_key=$3 AND external_message_id=$3`,
+        [text, req.user.id, String(thread_key)]
+      );
+      return res.json({ ok: true, provider, to: toAddr, message_id: sent.id });
+    }
+
+    if (provider === "slack") {
+      const token = decryptSecret(row.access_token_enc);
+      const pr = await fetch("https://slack.com/api/chat.postMessage", {
+        method: "POST", headers: { Authorization: `Bearer ${token}`, "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({ channel: String(thread_key), text }),
+      });
+      const posted = await pr.json();
+      if (!posted.ok) {
+        const friendly = {
+          missing_scope: "LOOP doesn't have permission to post in Slack yet. Disconnect and reconnect Slack to approve it.",
+          not_in_channel: "The LOOP bot isn't in that channel. Invite it with /invite @LOOP, then try again.",
+          channel_not_found: "That Slack channel couldn't be found.",
+          token_revoked: "Slack access was revoked. Reconnect Slack.",
+          invalid_auth: "Slack access is no longer valid. Reconnect Slack.",
+          account_inactive: "Slack access is no longer valid. Reconnect Slack.",
+        };
+        const reconnect = ["missing_scope", "token_revoked", "invalid_auth", "account_inactive"].includes(posted.error);
+        return res.status(reconnect ? 403 : 400).json({ error: friendly[posted.error] || `Slack couldn't post the reply (${posted.error || "unknown error"}).`, needs_reconnect: reconnect });
+      }
+      await logSentReply(req.user.id, "slack", String(thread_key), String(thread_key), text, posted.ts);
+      await ingestInboxMessage(req.user.id, "slack", {
+        threadKey: String(thread_key), externalMessageId: posted.ts, contactName: "You", contactIdentifier: null,
+        direction: "outbound", body: text, occurredAt: new Date(Number(String(posted.ts).split(".")[0]) * 1000),
+      });
+      return res.json({ ok: true, provider, message_id: posted.ts });
+    }
+  } catch (e) {
+    console.error("[LOOP] send reply failed:", e.message);
+    res.status(500).json({ error: "Something went wrong sending the reply. It was not sent." });
+  }
+});
 
 app.get("/api/plans", (req, res) => res.json({ plans: [
   { id: "free", name: "Free", price: 0, interval: "month", analyses: 5, loops: 50 },

@@ -2162,6 +2162,34 @@ app.post("/api/inbox/analyze", auth, async (req, res) => {
 });
 
 
+// --- Import a WhatsApp chat from WhatsApp's own "Export chat" file ---
+// For personal/normal chats that can't come through the WhatsApp Business API.
+// One imported chat = one inbox thread (re-importing the same chat name
+// refreshes it instead of duplicating). Import-only: no replies are sent.
+app.post("/api/inbox/import-whatsapp", auth, async (req, res) => {
+  const text = String(req.body?.text || "").replace(/[\u200e\u200f\u202a-\u202e]/g, "").trim();
+  const name = String(req.body?.name || "").trim().slice(0, 100) || "WhatsApp chat";
+  if (text.length < 20) return res.status(400).json({ error: "That file looks empty. Export the chat from WhatsApp (Without media) and try again." });
+  if (!/\d{1,4}[\/.\-]\d{1,2}[\/.\-]\d{1,4}/.test(text.slice(0, 2000))) return res.status(400).json({ error: "That doesn't look like a WhatsApp chat export (.txt). Use Export chat inside the WhatsApp chat." });
+  // Keep the most recent part of long chats.
+  let body = text.slice(-20000);
+  const firstBreak = body.indexOf("\n");
+  if (text.length > 20000 && firstBreak > -1 && firstBreak < 500) body = body.slice(firstBreak + 1);
+  const key = "import:" + crypto.createHash("sha1").update(`${req.user.id}:${name.toLowerCase()}`).digest("hex").slice(0, 16);
+  try {
+    await q(
+      `INSERT INTO inbox_messages(user_id,provider,thread_key,external_message_id,contact_name,contact_identifier,direction,body,occurred_at)
+       VALUES($1,'whatsapp',$2,$2,$3,NULL,'inbound',$4,now())
+       ON CONFLICT(user_id,provider,external_message_id) DO UPDATE SET body=EXCLUDED.body, contact_name=EXCLUDED.contact_name, occurred_at=now()`,
+      [req.user.id, key, name, body]
+    );
+    res.json({ ok: true, thread_key: key, name });
+  } catch (e) {
+    console.error("[LOOP] whatsapp import failed:", e.message);
+    res.status(500).json({ error: "Could not import that chat." });
+  }
+});
+
 // --- Send replies from the Inbox (Gmail + Slack) ---
 // Nothing here ever sends on its own: the user reviews/edits a draft and
 // taps Send. Every reply that goes out is written to sent_replies so

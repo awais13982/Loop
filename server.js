@@ -475,7 +475,7 @@ async function outlookAccessToken(row) {
   if (access && row.expires_at && new Date(row.expires_at).getTime() > Date.now()+60000) return access;
   if (!refresh || !process.env.MICROSOFT_CLIENT_ID || !process.env.MICROSOFT_CLIENT_SECRET) return access;
   const tenant = process.env.MICROSOFT_TENANT_ID || "common";
-  const body = new URLSearchParams({client_id:process.env.MICROSOFT_CLIENT_ID,client_secret:process.env.MICROSOFT_CLIENT_SECRET,refresh_token:refresh,grant_type:"refresh_token",scope:"offline_access Mail.Read User.Read"});
+  const body = new URLSearchParams({client_id:process.env.MICROSOFT_CLIENT_ID,client_secret:process.env.MICROSOFT_CLIENT_SECRET,refresh_token:refresh,grant_type:"refresh_token"});
   const r = await fetch(`https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token`, {method:"POST",headers:{"content-type":"application/x-www-form-urlencoded"},body});
   const d = await r.json();
   if (!r.ok || !d.access_token) throw new Error(d.error_description || "Outlook token refresh failed.");
@@ -1718,7 +1718,7 @@ app.get("/api/integrations", auth, async (req,res) => {
   const by = Object.fromEntries(rows.map(r=>[r.provider,r]));
   res.json({
     gmail: { configured: integrationConfigured("gmail"), connected: Boolean(by.gmail), account_email: by.gmail?.account_email || null, connected_at: by.gmail?.connected_at || null, can_send: Boolean(by.gmail) && String(by.gmail?.metadata?.scope || "").includes("gmail.send") },
-    outlook: { configured: integrationConfigured("outlook"), connected: Boolean(by.outlook), account_email: by.outlook?.account_email || null, connected_at: by.outlook?.connected_at || null },
+    outlook: { configured: integrationConfigured("outlook"), connected: Boolean(by.outlook), account_email: by.outlook?.account_email || null, connected_at: by.outlook?.connected_at || null, can_send: Boolean(by.outlook) && String(by.outlook?.metadata?.scope || "").toLowerCase().includes("mail.send") },
     whatsapp: { configured: integrationConfigured("whatsapp"), connected: Boolean(by.whatsapp), account_email: by.whatsapp?.account_email || null, connected_at: by.whatsapp?.connected_at || null, metadata: by.whatsapp?.metadata || {} },
     messenger: { configured: integrationConfigured("messenger"), connected: Boolean(by.messenger), account_email: by.messenger?.account_email || null, connected_at: by.messenger?.connected_at || null, metadata: by.messenger?.metadata || {} },
     slack: { configured: integrationConfigured("slack"), connected: Boolean(by.slack), account_email: by.slack?.account_email || null, connected_at: by.slack?.connected_at || null, metadata: by.slack?.metadata || {}, can_send: Boolean(by.slack) && String(by.slack?.metadata?.scope || "").split(",").includes("chat:write") }
@@ -2166,7 +2166,7 @@ app.post("/api/inbox/analyze", auth, async (req, res) => {
 // Nothing here ever sends on its own: the user reviews/edits a draft and
 // taps Send. Every reply that goes out is written to sent_replies so
 // there's a record of exactly what LOOP sent on the user's behalf.
-const REPLY_PROVIDERS = ["gmail", "slack"];
+const REPLY_PROVIDERS = ["gmail", "slack", "outlook"];
 const MAX_REPLY_LENGTH = 5000;
 const sendLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false,
@@ -2226,7 +2226,7 @@ app.post("/api/inbox/reply", auth, sendLimiter, async (req, res) => {
   if (text.length > MAX_REPLY_LENGTH) return res.status(400).json({ error: `Replies can be at most ${MAX_REPLY_LENGTH} characters.` });
   if (!(await ownedInboxThread(req.user.id, provider, String(thread_key)))) return res.status(404).json({ error: "Thread not found." });
   const row = await getIntegration(req.user.id, provider);
-  if (!row) return res.status(400).json({ error: `Connect ${provider === "gmail" ? "Gmail" : "Slack"} first.` });
+  if (!row) return res.status(400).json({ error: `Connect ${provider === "gmail" ? "Gmail" : provider === "outlook" ? "Outlook" : "Slack"} first.` });
 
   try {
     if (provider === "gmail") {
@@ -2286,6 +2286,72 @@ app.post("/api/inbox/reply", auth, sendLimiter, async (req, res) => {
       return res.json({ ok: true, provider, to: toAddr, message_id: sent.id });
     }
 
+    if (provider === "outlook") {
+      // Needs the Mail.Send permission. Connections made before it was added
+      // have no record of it, so ask the user to reconnect once.
+      if (!String(row.metadata?.scope || "").toLowerCase().includes("mail.send")) {
+        return res.status(403).json({ error: "LOOP doesn't have permission to send Outlook email yet. Disconnect and reconnect Outlook, and approve the 'send mail' permission.", needs_reconnect: true });
+      }
+      const access = await outlookAccessToken(row);
+      const gh = { Authorization: `Bearer ${access}`, "content-type": "application/json" };
+      const params = new URLSearchParams({ "$filter": `conversationId eq '${String(thread_key).replace(/'/g, "''")}'`, "$select": "id,subject,from,toRecipients,receivedDateTime", "$top": "50" });
+      const lr = await fetch(`https://graph.microsoft.com/v1.0/me/messages?${params}`, { headers: { Authorization: `Bearer ${access}` } });
+      const list = await lr.json();
+      if (!lr.ok) return res.status(lr.status === 403 || lr.status === 401 ? 403 : 502).json({ error: list.error?.message || "Could not read the Outlook thread.", needs_reconnect: lr.status === 403 || lr.status === 401 });
+      const msgs = (list.value || []).sort((a, b) => new Date(a.receivedDateTime) - new Date(b.receivedDateTime));
+      if (!msgs.length) return res.status(404).json({ error: "That Outlook conversation is empty." });
+      const me = String(row.account_email || "").toLowerCase();
+      const fromAddr = (m) => String(m.from?.emailAddress?.address || "").toLowerCase();
+      const isMine = (m) => me && fromAddr(m) === me;
+      const target = [...msgs].reverse().find(m => !isMine(m));
+      const escHtml = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const textHtml = `<div>${escHtml(text).replace(/\r?\n/g, "<br>")}</div><br>`;
+      let toAddr, sentId = null;
+      if (target) {
+        // Reply to the latest message from someone else; Outlook keeps the
+        // conversation thread and quotes the original underneath.
+        toAddr = target.from?.emailAddress?.address;
+        const cr = await fetch(`https://graph.microsoft.com/v1.0/me/messages/${encodeURIComponent(target.id)}/createReply`, { method: "POST", headers: gh, body: "{}" });
+        const draft = await cr.json();
+        if (!cr.ok) {
+          const needs = cr.status === 403 || cr.status === 401;
+          return res.status(needs ? 403 : 502).json({ error: needs ? "LOOP doesn't have permission to send Outlook email yet. Disconnect and reconnect Outlook, and approve the 'send mail' permission." : (draft.error?.message || "Outlook couldn't prepare the reply."), needs_reconnect: needs });
+        }
+        const quoted = draft.body?.contentType === "html" ? (draft.body.content || "") : "";
+        const pr = await fetch(`https://graph.microsoft.com/v1.0/me/messages/${encodeURIComponent(draft.id)}`, { method: "PATCH", headers: gh, body: JSON.stringify({ body: { contentType: "html", content: textHtml + quoted } }) });
+        const sr = pr.ok ? await fetch(`https://graph.microsoft.com/v1.0/me/messages/${encodeURIComponent(draft.id)}/send`, { method: "POST", headers: gh }) : pr;
+        if (!sr.ok) {
+          // Don't leave a half-made draft sitting in the user's mailbox.
+          await fetch(`https://graph.microsoft.com/v1.0/me/messages/${encodeURIComponent(draft.id)}`, { method: "DELETE", headers: { Authorization: `Bearer ${access}` } }).catch(() => {});
+          const err = await sr.json().catch(() => ({}));
+          return res.status(502).json({ error: err.error?.message || "Outlook couldn't send the reply. It was not sent." });
+        }
+        sentId = draft.id;
+      } else {
+        // Every message so far is from the user: follow up to whoever they wrote to.
+        const last = msgs[msgs.length - 1];
+        const to = (last.toRecipients || []).map(r => r.emailAddress?.address).filter(Boolean);
+        if (!to.length) return res.status(422).json({ error: "Couldn't work out who to reply to on this thread." });
+        toAddr = to[0];
+        const base = last.subject || "(no subject)";
+        const sm = await fetch("https://graph.microsoft.com/v1.0/me/sendMail", { method: "POST", headers: gh, body: JSON.stringify({
+          message: { subject: /^re:/i.test(base.trim()) ? base : `Re: ${base}`, body: { contentType: "text", content: text }, toRecipients: to.map(a => ({ emailAddress: { address: a } })) },
+          saveToSentItems: true,
+        }) });
+        if (!sm.ok) {
+          const err = await sm.json().catch(() => ({}));
+          return res.status(sm.status === 403 || sm.status === 401 ? 403 : 502).json({ error: err.error?.message || "Outlook couldn't send the reply.", needs_reconnect: sm.status === 403 || sm.status === 401 });
+        }
+      }
+      await logSentReply(req.user.id, "outlook", String(thread_key), toAddr, text, sentId);
+      await q(
+        `UPDATE inbox_messages SET body=LEFT(body || E'\\n\\n[You]: ' || $1, 20000), direction='outbound', occurred_at=now()
+         WHERE user_id=$2 AND provider='outlook' AND thread_key=$3 AND external_message_id=$3`,
+        [text, req.user.id, String(thread_key)]
+      );
+      return res.json({ ok: true, provider, to: toAddr });
+    }
+
     if (provider === "slack") {
       const token = decryptSecret(row.access_token_enc);
       const pr = await fetch("https://slack.com/api/chat.postMessage", {
@@ -2334,7 +2400,7 @@ app.get("/api/plans", (req, res) => res.json({ plans: [
 app.get("/api/integrations/outlook/connect", auth, (req,res) => {
   if (!integrationConfigured("outlook")) return res.status(503).json({error:"Outlook integration is not configured. Add MICROSOFT_CLIENT_ID and MICROSOFT_CLIENT_SECRET."});
   const tenant = process.env.MICROSOFT_TENANT_ID || "common";
-  const scopes = ["offline_access","Mail.Read","User.Read"];
+  const scopes = ["offline_access","Mail.Read","Mail.Send","User.Read"];
   const params = new URLSearchParams({client_id:process.env.MICROSOFT_CLIENT_ID,redirect_uri:integrationRedirect("outlook"),response_type:"code",response_mode:"query",scope:scopes.join(" "),state:oauthState(req.user.id,"outlook")});
   res.json({url:`https://login.microsoftonline.com/${tenant}/oauth2/v2.0/authorize?${params}`});
 });
@@ -2342,12 +2408,12 @@ app.get("/api/integrations/outlook/callback", async (req,res) => {
   try {
     const st=readOAuthState(req.query.state,"outlook"); if(req.query.error) throw new Error(String(req.query.error_description||req.query.error));
     const tenant = process.env.MICROSOFT_TENANT_ID || "common";
-    const body=new URLSearchParams({code:String(req.query.code||""),client_id:process.env.MICROSOFT_CLIENT_ID,client_secret:process.env.MICROSOFT_CLIENT_SECRET,redirect_uri:integrationRedirect("outlook"),grant_type:"authorization_code",scope:"offline_access Mail.Read User.Read"});
+    const body=new URLSearchParams({code:String(req.query.code||""),client_id:process.env.MICROSOFT_CLIENT_ID,client_secret:process.env.MICROSOFT_CLIENT_SECRET,redirect_uri:integrationRedirect("outlook"),grant_type:"authorization_code",scope:"offline_access Mail.Read Mail.Send User.Read"});
     const tr=await fetch(`https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token`,{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded"},body}); const tok=await tr.json();
     if(!tr.ok||!tok.access_token) throw new Error(tok.error_description||"Microsoft authorization failed.");
     const pr=await fetch("https://graph.microsoft.com/v1.0/me",{headers:{Authorization:`Bearer ${tok.access_token}`}}); const prof=await pr.json();
     if(!pr.ok) throw new Error("Could not read the connected Outlook account.");
-    await saveIntegration(st.uid,"outlook",{account_email:prof.mail||prof.userPrincipalName,access_token:tok.access_token,refresh_token:tok.refresh_token,expires_at:new Date(Date.now()+Number(tok.expires_in||3600)*1000),metadata:{}});
+    await saveIntegration(st.uid,"outlook",{account_email:prof.mail||prof.userPrincipalName,access_token:tok.access_token,refresh_token:tok.refresh_token,expires_at:new Date(Date.now()+Number(tok.expires_in||3600)*1000),metadata:{scope:String(tok.scope||"")}});
     res.redirect(`${appUrl()}/?integration=outlook&status=connected`);
   } catch(e) { res.redirect(`${appUrl()}/?integration=outlook&status=error&message=${encodeURIComponent(e.message)}`); }
 });

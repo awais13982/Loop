@@ -2194,7 +2194,7 @@ app.post("/api/inbox/import-whatsapp", auth, async (req, res) => {
 // Nothing here ever sends on its own: the user reviews/edits a draft and
 // taps Send. Every reply that goes out is written to sent_replies so
 // there's a record of exactly what LOOP sent on the user's behalf.
-const REPLY_PROVIDERS = ["gmail", "slack", "outlook"];
+const REPLY_PROVIDERS = ["gmail", "slack", "outlook", "messenger"];
 const MAX_REPLY_LENGTH = 5000;
 const sendLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false,
@@ -2254,7 +2254,7 @@ app.post("/api/inbox/reply", auth, sendLimiter, async (req, res) => {
   if (text.length > MAX_REPLY_LENGTH) return res.status(400).json({ error: `Replies can be at most ${MAX_REPLY_LENGTH} characters.` });
   if (!(await ownedInboxThread(req.user.id, provider, String(thread_key)))) return res.status(404).json({ error: "Thread not found." });
   const row = await getIntegration(req.user.id, provider);
-  if (!row) return res.status(400).json({ error: `Connect ${provider === "gmail" ? "Gmail" : provider === "outlook" ? "Outlook" : "Slack"} first.` });
+  if (!row) return res.status(400).json({ error: `Connect ${provider === "gmail" ? "Gmail" : provider === "outlook" ? "Outlook" : provider === "messenger" ? "Messenger" : "Slack"} first.` });
 
   try {
     if (provider === "gmail") {
@@ -2378,6 +2378,38 @@ app.post("/api/inbox/reply", auth, sendLimiter, async (req, res) => {
         [text, req.user.id, String(thread_key)]
       );
       return res.json({ ok: true, provider, to: toAddr });
+    }
+
+    if (provider === "messenger") {
+      // Meta only allows a free-form reply within 24 hours of the person's
+      // last message to the Page. Check that first so the error is clear.
+      const lastIn = await one("SELECT MAX(occurred_at) AS t FROM inbox_messages WHERE user_id=$1 AND provider='messenger' AND thread_key=$2 AND direction='inbound'", [req.user.id, String(thread_key)]);
+      if (lastIn?.t && Date.now() - new Date(lastIn.t).getTime() > 24 * 60 * 60 * 1000) {
+        return res.status(422).json({ error: "Messenger only allows replies within 24 hours of the person's last message. This one is older, so reply from your Facebook Page inbox instead." });
+      }
+      const pageToken = decryptSecret(row.access_token_enc);
+      const mr = await fetch("https://graph.facebook.com/v23.0/me/messages", {
+        method: "POST", headers: { Authorization: `Bearer ${pageToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ recipient: { id: String(thread_key) }, messaging_type: "RESPONSE", message: { text } }),
+      });
+      const sent = await mr.json().catch(() => ({}));
+      if (!mr.ok) {
+        const code = sent.error?.code, sub = sent.error?.error_subcode;
+        const reconnect = code === 190 || code === 200 || code === 10 && sub !== 2018278;
+        const outside = code === 10 && sub === 2018278;
+        return res.status(reconnect ? 403 : outside ? 422 : 502).json({
+          error: outside ? "Messenger only allows replies within 24 hours of the person's last message. Reply from your Facebook Page inbox instead."
+            : reconnect ? "LOOP doesn't have permission to send Messenger replies. Disconnect and reconnect Messenger and approve all permissions. (While your Meta app is in development mode, replies only work to people with a role on the app.)"
+            : (sent.error?.message || "Messenger couldn't send the reply."),
+          needs_reconnect: reconnect,
+        });
+      }
+      await logSentReply(req.user.id, "messenger", String(thread_key), String(thread_key), text, sent.message_id);
+      await ingestInboxMessage(req.user.id, "messenger", {
+        threadKey: String(thread_key), externalMessageId: sent.message_id || `out-${Date.now()}`, contactName: "You", contactIdentifier: null,
+        direction: "outbound", body: text, occurredAt: new Date(),
+      });
+      return res.json({ ok: true, provider, message_id: sent.message_id });
     }
 
     if (provider === "slack") {

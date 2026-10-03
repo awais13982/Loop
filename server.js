@@ -790,6 +790,34 @@ app.post("/api/auth/reset-password", async (req, res) => {
 });
 
 app.get("/api/me", auth, async (req, res) => res.json({ user: req.user }));
+// Permanently deletes the account and everything tied to it (all tables
+// cascade from users). Needs the password, and cancels any Paddle
+// subscription first so nobody keeps getting billed after deleting.
+app.delete("/api/account", auth, async (req, res) => {
+  try {
+    const password = String(req.body?.password || "");
+    const u = await one("SELECT id,password_hash,paddle_subscription_id FROM users WHERE id=$1", [req.user.id]);
+    if (!u || !(await bcrypt.compare(password, u.password_hash))) return res.status(401).json({ error: "Wrong password." });
+    if (u.paddle_subscription_id && paddleConfigured) {
+      try {
+        await paddleApi(`/subscriptions/${u.paddle_subscription_id}/cancel`, { method: "POST", body: JSON.stringify({ effective_from: "immediately" }) });
+      } catch (e) {
+        // Already-cancelled subscriptions are fine; anything else must stop
+        // the deletion so the user isn't left paying for a deleted account.
+        if (!/(already|canceled|cancelled|not.?found|404)/i.test(String(e.message))) {
+          console.error("[LOOP] account delete: Paddle cancel failed:", e.message);
+          return res.status(502).json({ error: "Could not cancel your subscription, so your account was not deleted. Please email support." });
+        }
+      }
+    }
+    await q("DELETE FROM users WHERE id=$1", [req.user.id]);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("[LOOP] account delete failed:", e.message);
+    res.status(500).json({ error: "Could not delete the account." });
+  }
+});
+
 
 // --- Clients ---
 app.get("/api/clients", auth, async (req, res) =>

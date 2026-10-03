@@ -1927,6 +1927,44 @@ app.get("/api/integrations/messenger/callback", async(req,res)=>{
     res.redirect(`${appUrl()}/?integration=messenger&status=connected`);
   } catch(e) { res.redirect(`${appUrl()}/?integration=messenger&status=error&message=${encodeURIComponent(e.message)}`); }
 });
+// Pulls recent conversations from the connected Facebook Page (including ones
+// from before LOOP was connected). Same unified inbox table as the webhook;
+// message ids match the webhook's, so nothing is duplicated.
+app.post("/api/integrations/messenger/sync", auth, async (req, res) => {
+  const row = await getIntegration(req.user.id, "messenger");
+  if (!row) return res.status(400).json({ error: "Connect Messenger first." });
+  const pageId = String(row.metadata?.page_id || "");
+  try {
+    const token = decryptSecret(row.access_token_enc);
+    const params = new URLSearchParams({ platform: "messenger", limit: "25", fields: "participants,messages.limit(25){id,message,from,created_time}" });
+    const r = await fetch(`https://graph.facebook.com/v23.0/me/conversations?${params}`, { headers: { Authorization: `Bearer ${token}` } });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const code = d.error?.code;
+      const reconnect = code === 190 || code === 200 || code === 10;
+      return res.status(reconnect ? 403 : 502).json({ error: reconnect ? "LOOP can't read this Page's conversations. Disconnect and reconnect Messenger and approve all permissions." : (d.error?.message || "Messenger request failed."), needs_reconnect: reconnect });
+    }
+    let synced = 0;
+    for (const c of (d.data || [])) {
+      const other = (c.participants?.data || []).find(p => String(p.id) !== pageId);
+      if (!other?.id) continue;
+      for (const m of (c.messages?.data || [])) {
+        if (!m.message || !m.id) continue;
+        const mine = String(m.from?.id || "") === pageId;
+        await ingestInboxMessage(req.user.id, "messenger", {
+          threadKey: String(other.id), externalMessageId: m.id,
+          contactName: mine ? "You" : (m.from?.name || other.name || null), contactIdentifier: String(other.id),
+          direction: mine ? "outbound" : "inbound", body: m.message, occurredAt: m.created_time ? new Date(m.created_time) : new Date(),
+        });
+        synced++;
+      }
+    }
+    res.json({ synced });
+  } catch (e) {
+    console.error("[LOOP] messenger sync failed:", e.message);
+    res.status(500).json({ error: "Messenger sync failed." });
+  }
+});
 app.post("/api/integrations/messenger/disconnect", auth, async(req,res)=>{await deleteIntegration(req.user.id,"messenger");res.json({ok:true});});
 app.get("/api/webhooks/messenger", (req,res)=>{const mode=req.query["hub.mode"],token=req.query["hub.verify_token"],challenge=req.query["hub.challenge"];if(mode==="subscribe"&&token&&token===process.env.WHATSAPP_VERIFY_TOKEN)return res.status(200).send(challenge);res.sendStatus(403);});
 
